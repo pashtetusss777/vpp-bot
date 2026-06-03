@@ -1,0 +1,6 @@
+python-bot/.venv/
+python-bot/config.yml
+python-bot/*.db
+python-bot/applications-stats-preview.png
+paper-plugin/target/
+*.log

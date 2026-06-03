@@ -1,0 +1,5 @@
+aiogram==3.28.2
+aiohttp==3.13.5
+aiosqlite==0.22.1
+PyYAML==6.0.3
+Pillow==12.0.0

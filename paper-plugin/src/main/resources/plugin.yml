@@ -1,0 +1,6 @@
+name: VanillaPlusPlus
+version: ${project.version}
+main: dev.example.vanillaplus.VanillaPlusPlusPlugin
+api-version: "1.20"
+author: vanilla++
+description: Vanilla++ local HTTP bridge for Telegram application bot.

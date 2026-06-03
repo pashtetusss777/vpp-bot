@@ -1,0 +1,15 @@
+host: "127.0.0.1"
+port: 8088
+token: "change-this-long-random-secret"
+console:
+	# По умолчанию выключено — включите, если доверяете сети и токену
+	enabled: false
+	# Список разрешённых префиксов команд. Пример: "say", "kick", "whitelist add"
+	# Используйте "*" чтобы разрешить любые команды (опасно).
+	allowed-commands:
+		- "say"
+		- "kick"
+		- "whitelist add"
+		- "op"
+		- "deop"
+

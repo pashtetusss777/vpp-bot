@@ -1,0 +1,14 @@
+.git
+.agents
+.codex
+
+python-bot/.venv
+python-bot/__pycache__
+python-bot/config.yml
+python-bot/*.db
+python-bot/*.log
+python-bot/applications-stats-preview.png
+
+paper-plugin/target
+*.log
+
