@@ -17,6 +17,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from PIL import Image, ImageDraw, ImageFont
+from strings import Strings
 
 
 NICKNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,16}$")
@@ -336,7 +337,7 @@ class ApplicationFlow:
     async def start(self, message: Message) -> None:
         if message.chat.type != "private":
             if message.chat.id == self.config.admin_chat_id and self._is_admin(message.from_user.id):
-                await message.answer("Админ-панель", reply_markup=self._admin_panel_keyboard())
+                await message.answer(Strings.ADMIN_PANEL, reply_markup=self._admin_panel_keyboard())
             return
 
         latest_status = await self.store.get_latest_status(message.from_user.id)
@@ -353,13 +354,13 @@ class ApplicationFlow:
         await message.answer(
             self.config.messages.form_start,
             reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="Приступить к заявке", callback_data="flow:start")]]
+                inline_keyboard=[[InlineKeyboardButton(text=Strings.BUTTON_START, callback_data="flow:start")]]
             ),
         )
 
     async def handle_flow(self, callback: CallbackQuery) -> None:
         if callback.message.chat.type != "private":
-            await self._safe_answer(callback, "Кнопка доступна только в личных сообщениях.", show_alert=True)
+            await self._safe_answer(callback, Strings.ONLY_PRIVATE_ALERT, show_alert=True)
             return
 
         action = callback.data.split(":", maxsplit=1)[1]
@@ -386,7 +387,7 @@ class ApplicationFlow:
 
         if session.nickname is None:
             if not NICKNAME_RE.fullmatch(text):
-                await message.answer("Неверный ник. Используйте 3-16 символов: латиница, цифры и _." )
+                await message.answer(Strings.INVALID_NICKNAME)
                 return
 
             session.nickname = text
@@ -434,7 +435,7 @@ class ApplicationFlow:
         if action == "view":
             application = await self.store.get_by_id(application_id)
             if application is None:
-                await self._safe_answer(callback, "Заявка не найдена.", show_alert=True)
+                await self._safe_answer(callback, Strings.APPLICATION_NOT_FOUND, show_alert=True)
                 return
 
             await self._safe_answer(callback)
@@ -445,7 +446,7 @@ class ApplicationFlow:
         pending = await self.store.get_pending(application_id)
 
         if pending is None:
-            await self._safe_answer(callback, "Заявка уже обработана.", show_alert=True)
+            await self._safe_answer(callback, Strings.APPLICATION_ALREADY_PROCESSED, show_alert=True)
             return
 
         telegram_id, nickname = pending
@@ -455,7 +456,7 @@ class ApplicationFlow:
             try:
                 await self.bridge.add_to_whitelist(nickname)
             except Exception as exc:
-                await self._safe_answer(callback, "Не удалось добавить в whitelist.", show_alert=True)
+                await self._safe_answer(callback, Strings.WHITELIST_ADD_FAILED, show_alert=True)
                 await callback.message.answer(f"Ошибка bridge для заявки #{application_id}: {html.escape(str(exc))}")
                 return
 
@@ -463,21 +464,21 @@ class ApplicationFlow:
             await bot.send_message(telegram_id, self.config.messages.application_accepted)
             await callback.message.edit_reply_markup(reply_markup=None)
             await callback.message.answer(f"Заявка #{application_id} принята — ник <code>{html.escape(nickname)}</code> добавлен в whitelist.")
-            await self._safe_answer(callback, "Принято ✅")
+            await self._safe_answer(callback, Strings.ACTION_ACCEPTED)
             return
 
         if action == "reject":
             await self.store.decide(application_id, "rejected", admin_id)
             await bot.send_message(telegram_id, self.config.messages.application_rejected)
             await callback.message.edit_reply_markup(reply_markup=None)
-            await self._safe_answer(callback, "Отклонено ❌")
+            await self._safe_answer(callback, Strings.ACTION_REJECTED)
             return
 
         if action == "ban":
             await self.store.decide(application_id, "banned", admin_id)
             await bot.send_message(telegram_id, self.config.messages.application_banned)
             await callback.message.edit_reply_markup(reply_markup=None)
-            await self._safe_answer(callback, "Забанено ⛔")
+            await self._safe_answer(callback, Strings.ACTION_BANNED)
 
     async def handle_admin_panel(self, callback: CallbackQuery, bot: Bot) -> None:
         if not await self._allow_admin_callback(callback):
@@ -532,7 +533,7 @@ class ApplicationFlow:
             if command.startswith("/"):
                 command = command[1:].lstrip()
             if not command:
-                await message.answer("Пустая команда. Отмена.")
+                await message.answer(Strings.EMPTY_COMMAND)
                 return
             try:
                 result = await self.bridge.exec_command(command)
@@ -548,7 +549,7 @@ class ApplicationFlow:
         self.admin_search_sessions.discard(message.from_user.id)
         applications = await self.store.search(message.text)
         if not applications:
-            await message.answer("Ничего не найдено.")
+            await message.answer(Strings.NOTHING_FOUND)
             return
 
         lines = ["<b>Результаты поиска</b>"]
@@ -563,7 +564,7 @@ class ApplicationFlow:
     async def _send_application_list(self, message: Message) -> None:
         applications = await self.store.list_applications(status="pending", limit=10)
         if not applications:
-            await message.answer("Ожидающих заявок нет.")
+            await message.answer(Strings.NO_PENDING_APPLICATIONS)
             return
 
         lines = ["<b>Ожидающие заявки</b>"]
@@ -735,7 +736,20 @@ class ApplicationFlow:
             for p in sorted(local_fonts.glob("*.ttf")):
                 candidates.append(str(p))
 
-        # Common font names that may be available on the system (Windows)
+        # Prefer common Linux fonts (typical on VPS/Docker images)
+        if bold:
+            candidates += [
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            ]
+        else:
+            candidates += [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+            ]
+
+        # Fallback to common Windows font paths if running on Windows
         if bold:
             candidates += [
                 "C:/Windows/Fonts/segoeuib.ttf",
@@ -768,10 +782,10 @@ class ApplicationFlow:
 
     async def _allow_admin_callback(self, callback: CallbackQuery) -> bool:
         if callback.message.chat.id != self.config.admin_chat_id:
-            await self._safe_answer(callback, "Эта кнопка доступна только в админ-чате.", show_alert=True)
+            await self._safe_answer(callback, Strings.ADMIN_ONLY_BUTTON, show_alert=True)
             return False
         if not self._is_admin(callback.from_user.id):
-            await self._safe_answer(callback, "У вас нет доступа.", show_alert=True)
+            await self._safe_answer(callback, Strings.NO_ACCESS, show_alert=True)
             return False
         return True
 

@@ -22,7 +22,6 @@ import java.util.regex.Pattern;
 
 public final class VanillaPlusPlusPlugin extends JavaPlugin {
     private static final Pattern NICKNAME_PATTERN = Pattern.compile("^[A-Za-z0-9_]{3,16}$");
-    private static final String PREFIX = ChatColor.BLUE + "[Vanilla++] " + ChatColor.RESET;
 
     private final Gson gson = new Gson();
     private HttpServer server;
@@ -37,35 +36,35 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
         int port = getConfig().getInt("port", 8088);
         token = getConfig().getString("token", "");
 
-        if (token == null || token.isBlank() || token.equals("change-this-long-random-secret")) {
-            console("Set a strong token in plugins/VanillaPlusPlus/config.yml before using the bridge.");
+        if (token == null || token.isBlank() || token.equals(Strings.DEFAULT_TOKEN.get())) {
+            console("Set a strong token in " + Strings.CONFIG_PATH.get() + " before using the bridge.");
         }
 
         try {
             server = HttpServer.create(new InetSocketAddress(host, port), 0);
-            server.createContext("/whitelist/add", this::handleWhitelistAdd);
+            server.createContext(Strings.WHITELIST_ADD_ENDPOINT.get(), this::handleWhitelistAdd);
             if (getConfig().getBoolean("console.enabled", false)) {
-                server.createContext("/console/exec", this::handleConsoleExec);
+                server.createContext(Strings.CONSOLE_EXEC_ENDPOINT.get(), this::handleConsoleExec);
             }
             executor = Executors.newSingleThreadExecutor();
             server.setExecutor(executor);
             server.start();
-            console("Bridge listening on http://" + host + ":" + port);
+            console(String.format(Strings.BRIDGE_LISTENING.get(), host, port));
         } catch (IOException exception) {
-            console("Failed to start HTTP bridge: " + exception.getMessage());
+            console(String.format(Strings.BRIDGE_FAILED.get(), exception.getMessage()));
             Bukkit.getPluginManager().disablePlugin(this);
         }
     }
 
     private void handleConsoleExec(HttpExchange exchange) throws IOException {
         if (!exchange.getRequestMethod().equalsIgnoreCase("POST")) {
-            sendJson(exchange, 405, "{\"error\":\"method_not_allowed\"}");
+            sendJson(exchange, 405, Strings.ERROR_METHOD_NOT_ALLOWED.get());
             return;
         }
 
         String authorization = exchange.getRequestHeaders().getFirst("Authorization");
         if (!("Bearer " + token).equals(authorization)) {
-            sendJson(exchange, 401, "{\"error\":\"unauthorized\"}");
+            sendJson(exchange, 401, Strings.ERROR_UNAUTHORIZED.get());
             return;
         }
 
@@ -74,12 +73,12 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
             JsonObject body = gson.fromJson(reader, JsonObject.class);
             command = body != null && body.has("command") ? body.get("command").getAsString() : "";
         } catch (JsonParseException | IllegalStateException exception) {
-            sendJson(exchange, 400, "{\"error\":\"invalid_json\"}");
+            sendJson(exchange, 400, Strings.ERROR_INVALID_JSON.get());
             return;
         }
 
         if (command == null || command.isBlank()) {
-            sendJson(exchange, 422, "{\"error\":\"invalid_command\"}");
+            sendJson(exchange, 422, Strings.ERROR_INVALID_COMMAND.get());
             return;
         }
 
@@ -97,7 +96,7 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
         }
 
         if (!allowedToRun) {
-            sendJson(exchange, 403, "{\"error\":\"forbidden_command\"}");
+            sendJson(exchange, 403, Strings.ERROR_FORBIDDEN_COMMAND.get());
             return;
         }
 
@@ -106,7 +105,7 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
             console("Executed console command: " + command + " => " + (ok ? "ok" : "failed"));
         });
 
-        sendJson(exchange, 200, "{\"status\":\"ok\"}");
+        sendJson(exchange, 200, Strings.STATUS_OK.get());
     }
 
     @Override
@@ -117,18 +116,18 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
         if (executor != null) {
             executor.shutdownNow();
         }
-        console("Bridge stopped.");
+        console(Strings.BRIDGE_STOPPED.get());
     }
 
     private void handleWhitelistAdd(HttpExchange exchange) throws IOException {
         if (!exchange.getRequestMethod().equalsIgnoreCase("POST")) {
-            sendJson(exchange, 405, "{\"error\":\"method_not_allowed\"}");
+            sendJson(exchange, 405, Strings.ERROR_METHOD_NOT_ALLOWED.get());
             return;
         }
 
         String authorization = exchange.getRequestHeaders().getFirst("Authorization");
         if (!("Bearer " + token).equals(authorization)) {
-            sendJson(exchange, 401, "{\"error\":\"unauthorized\"}");
+            sendJson(exchange, 401, Strings.ERROR_UNAUTHORIZED.get());
             return;
         }
 
@@ -137,12 +136,12 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
             JsonObject body = gson.fromJson(reader, JsonObject.class);
             nickname = body != null && body.has("nickname") ? body.get("nickname").getAsString() : "";
         } catch (JsonParseException | IllegalStateException exception) {
-            sendJson(exchange, 400, "{\"error\":\"invalid_json\"}");
+            sendJson(exchange, 400, Strings.ERROR_INVALID_JSON.get());
             return;
         }
 
         if (!NICKNAME_PATTERN.matcher(nickname).matches()) {
-            sendJson(exchange, 422, "{\"error\":\"invalid_nickname\"}");
+            sendJson(exchange, 422, Strings.ERROR_INVALID_NICKNAME.get());
             return;
         }
 
@@ -152,7 +151,7 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
             console("Whitelisted player " + nickname);
         });
 
-        sendJson(exchange, 200, "{\"status\":\"ok\"}");
+        sendJson(exchange, 200, Strings.STATUS_OK.get());
     }
 
     private void sendJson(HttpExchange exchange, int status, String body) throws IOException {
@@ -165,6 +164,6 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
     }
 
     private void console(String message) {
-        Bukkit.getConsoleSender().sendMessage(PREFIX + message);
+        Bukkit.getConsoleSender().sendMessage(Strings.PREFIX.get() + message);
     }
 }
