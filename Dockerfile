@@ -15,12 +15,11 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 # Create non-root user and set permissions
 RUN useradd --create-home --shell /bin/bash appuser \
-	&& mkdir -p /app \
-	&& chown appuser:appuser /app
+	&& mkdir -p /app /data \
+	&& chown -R appuser:appuser /app /data
 
 COPY python-bot/ /app/
 
 USER appuser
 
 CMD ["python", "bot.py"]
-
