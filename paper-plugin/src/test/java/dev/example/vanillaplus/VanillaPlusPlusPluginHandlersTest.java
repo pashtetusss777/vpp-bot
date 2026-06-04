@@ -12,6 +12,8 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.util.HashMap;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -23,6 +25,7 @@ class VanillaPlusPlusPluginHandlersTest {
         private final ByteArrayOutputStream respBody = new ByteArrayOutputStream();
         private final InputStream reqBody;
         private final String method;
+        private final Map<String, Object> attributes = new HashMap<>();
         private int status = -1;
 
         MockHttpExchange(String method, String body) {
@@ -87,6 +90,31 @@ class VanillaPlusPlusPluginHandlersTest {
         @Override
         public HttpPrincipal getPrincipal() {
             return null;
+        }
+
+        @Override
+        public InetSocketAddress getLocalAddress() {
+            return new InetSocketAddress(0);
+        }
+
+        @Override
+        public String getProtocol() {
+            return "HTTP/1.1";
+        }
+
+        @Override
+        public Object getAttribute(String name) {
+            return attributes.get(name);
+        }
+
+        @Override
+        public void setAttribute(String name, Object value) {
+            attributes.put(name, value);
+        }
+
+        @Override
+        public int getResponseCode() {
+            return status;
         }
 
         int getStatus() {
