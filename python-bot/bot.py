@@ -340,17 +340,30 @@ class ApplicationFlow:
                 await message.answer(Strings.ADMIN_PANEL, reply_markup=self._admin_panel_keyboard())
             return
 
-        latest_status = await self.store.get_latest_status(message.from_user.id)
-        if latest_status == "banned":
-            await message.answer(self.config.messages.application_banned)
-            return
-        if latest_status == "pending":
-            await message.answer(self.config.messages.already_applied)
-            return
-        if latest_status == "approved":
-            await message.answer(self.config.messages.application_accepted)
+        if self._is_admin(message.from_user.id):
+            await self._send_player_status(message, message.from_user.id)
+            await message.answer(Strings.ADMIN_PANEL, reply_markup=self._admin_panel_keyboard())
             return
 
+        await self._send_player_menu(message, message.from_user.id)
+
+    async def _send_player_status(self, message: Message, user_id: int) -> bool:
+        latest_status = await self.store.get_latest_status(user_id)
+        if latest_status == "banned":
+            await message.answer(self.config.messages.application_banned)
+            return True
+        if latest_status == "pending":
+            await message.answer(self.config.messages.already_applied)
+            return True
+        if latest_status == "approved":
+            await message.answer(self.config.messages.application_accepted)
+            return True
+
+        return False
+
+    async def _send_player_menu(self, message: Message, user_id: int) -> None:
+        if await self._send_player_status(message, user_id):
+            return
         await message.answer(
             self.config.messages.form_start,
             reply_markup=InlineKeyboardMarkup(
@@ -379,6 +392,8 @@ class ApplicationFlow:
 
     async def answer_question(self, message: Message, bot: Bot) -> None:
         user_id = message.from_user.id
+        if await self._handle_admin_text(message):
+            return
         if user_id not in self.sessions:
             return
 
@@ -493,6 +508,12 @@ class ApplicationFlow:
         if section == "stats":
             await self._send_stats(callback.message, bot)
             return
+        if section == "online":
+            await callback.message.answer(
+                "<b>Онлайн</b>\n"
+                "Просмотр онлайна пока не подключен к bridge. Позже добавим отдельный безопасный endpoint без RCON."
+            )
+            return
         if section == "server":
             await callback.message.answer(
                 "<b>Панель сервера</b>\n"
@@ -509,6 +530,17 @@ class ApplicationFlow:
             user_count = await self.store.user_count()
             await callback.message.answer(f"<b>Пользователи бота</b>\nУникальных подавших заявки: <code>{user_count}</code>")
             return
+        if section == "info":
+            counts = Counter(await self.store.counts_by_status())
+            user_count = await self.store.user_count()
+            await callback.message.answer(
+                "<b>Информация</b>\n"
+                f"Bridge: <code>{html.escape(self.config.bridge.base_url)}</code>\n"
+                f"Пользователей: <code>{user_count}</code>\n"
+                f"Заявок всего: <code>{sum(counts.values())}</code>\n"
+                f"Ожидают: <code>{counts.get('pending', 0)}</code>"
+            )
+            return
         if section == "admins":
             admins = "\n".join(f"<code>{admin_id}</code>" for admin_id in sorted(self.config.admins)) or "Все пользователи считаются админами."
             await callback.message.answer(f"<b>Админы</b>\n{admins}")
@@ -521,11 +553,14 @@ class ApplicationFlow:
             await callback.message.answer("Отправьте команду для выполнения в консоли сервера. Можно начать с '/' или без. Пример: say Привет всем")
             return
         if section == "player_menu":
-            await callback.message.answer("Меню игрока пока в разработке.")
+            await self._send_player_menu(callback.message, callback.from_user.id)
 
     async def handle_admin_text(self, message: Message) -> None:
+        await self._handle_admin_text(message)
+
+    async def _handle_admin_text(self, message: Message) -> bool:
         if not self._is_admin(message.from_user.id):
-            return
+            return False
         # Console command session (admin)
         if message.from_user.id in self.console_sessions:
             self.console_sessions.discard(message.from_user.id)
@@ -534,23 +569,23 @@ class ApplicationFlow:
                 command = command[1:].lstrip()
             if not command:
                 await message.answer(Strings.EMPTY_COMMAND)
-                return
+                return True
             try:
                 result = await self.bridge.exec_command(command)
                 await message.answer(f"Команда отправлена. Ответ: <code>{html.escape(result)}</code>")
             except Exception as exc:
                 await message.answer(f"Ошибка при отправке команды: <code>{html.escape(str(exc))}</code>")
-            return
+            return True
         if message.text.startswith("/"):
-            return
+            return False
         if message.from_user.id not in self.admin_search_sessions:
-            return
+            return False
 
         self.admin_search_sessions.discard(message.from_user.id)
         applications = await self.store.search(message.text)
         if not applications:
             await message.answer(Strings.NOTHING_FOUND)
-            return
+            return True
 
         lines = ["<b>Результаты поиска</b>"]
         buttons = []
@@ -560,6 +595,7 @@ class ApplicationFlow:
             buttons.append([InlineKeyboardButton(text=f"Открыть #{application.id}", callback_data=f"app:view:{application.id}")])
 
         await message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        return True
 
     async def _send_application_list(self, message: Message) -> None:
         applications = await self.store.list_applications(status="pending", limit=10)
@@ -633,20 +669,16 @@ class ApplicationFlow:
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="Заявки", callback_data="panel:applications"),
-                    InlineKeyboardButton(text="Статистика заявок", callback_data="panel:stats"),
+                    InlineKeyboardButton(text="📝 Заявки", callback_data="panel:applications"),
+                    InlineKeyboardButton(text="📊 Статистика заявок", callback_data="panel:stats"),
                 ],
                 [
-                    InlineKeyboardButton(text="Панель сервера", callback_data="panel:server"),
-                    InlineKeyboardButton(text="Поиск", callback_data="panel:search"),
+                    InlineKeyboardButton(text="👥 Онлайн", callback_data="panel:online"),
+                    InlineKeyboardButton(text="🔍 Поиск", callback_data="panel:search"),
                 ],
                 [
-                    InlineKeyboardButton(text="Пользователи бота", callback_data="panel:users"),
-                    InlineKeyboardButton(text="Рассылка", callback_data="panel:broadcast"),
-                ],
-                [
-                    InlineKeyboardButton(text="RCON отключен", callback_data="panel:console"),
-                    InlineKeyboardButton(text="Админы", callback_data="panel:admins"),
+                    InlineKeyboardButton(text="ℹ️ Информация", callback_data="panel:info"),
+                    InlineKeyboardButton(text="📣 Рассылка", callback_data="panel:broadcast"),
                 ],
                 [
                     InlineKeyboardButton(text="В меню игрока", callback_data="panel:player_menu"),
@@ -781,11 +813,13 @@ class ApplicationFlow:
             return ImageFont.load_default()
 
     async def _allow_admin_callback(self, callback: CallbackQuery) -> bool:
-        if callback.message.chat.id != self.config.admin_chat_id:
-            await self._safe_answer(callback, Strings.ADMIN_ONLY_BUTTON, show_alert=True)
-            return False
         if not self._is_admin(callback.from_user.id):
             await self._safe_answer(callback, Strings.NO_ACCESS, show_alert=True)
+            return False
+        is_admin_chat = callback.message.chat.id == self.config.admin_chat_id
+        is_private = callback.message.chat.type == "private"
+        if not is_admin_chat and not is_private:
+            await self._safe_answer(callback, Strings.ADMIN_ONLY_BUTTON, show_alert=True)
             return False
         return True
 
