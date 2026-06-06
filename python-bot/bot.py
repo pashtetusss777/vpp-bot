@@ -290,6 +290,12 @@ class MinecraftBridge:
     def __init__(self, config: BridgeConfig) -> None:
         self.config = config
 
+    async def get_status(self) -> dict[str, Any]:
+        return await self._get_json("/server/status")
+
+    async def get_online(self) -> dict[str, Any]:
+        return await self._get_json("/server/online")
+
     async def add_to_whitelist(self, nickname: str) -> None:
         timeout = aiohttp.ClientTimeout(total=self.config.timeout_seconds)
         headers = {"Authorization": f"Bearer {self.config.token}"}
@@ -313,6 +319,23 @@ class MinecraftBridge:
                 if response.status >= 400:
                     raise RuntimeError(f"Bridge returned HTTP {response.status}: {body}")
                 return body
+
+    async def _get_json(self, endpoint: str) -> dict[str, Any]:
+        timeout = aiohttp.ClientTimeout(total=self.config.timeout_seconds)
+        headers = {"Authorization": f"Bearer {self.config.token}"}
+
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(f"{self.config.base_url}{endpoint}") as response:
+                body = await response.text()
+                if response.status >= 400:
+                    raise RuntimeError(f"Bridge returned HTTP {response.status}: {body}")
+                try:
+                    data = await response.json(content_type=None)
+                except aiohttp.ContentTypeError as exc:
+                    raise RuntimeError(f"Bridge returned invalid JSON: {body}") from exc
+                if not isinstance(data, dict):
+                    raise RuntimeError(f"Bridge returned unexpected JSON: {body}")
+                return data
 
 
 class ApplicationFlow:
@@ -509,18 +532,10 @@ class ApplicationFlow:
             await self._send_stats(callback.message, bot)
             return
         if section == "online":
-            await callback.message.answer(
-                "<b>Онлайн</b>\n"
-                "Просмотр онлайна пока не подключен к bridge. Позже добавим отдельный безопасный endpoint без RCON."
-            )
+            await self._send_server_online(callback.message)
             return
         if section == "server":
-            await callback.message.answer(
-                "<b>Панель сервера</b>\n"
-                f"Bridge: <code>{html.escape(self.config.bridge.base_url)}</code>\n"
-                "Whitelist: через Java bridge\n"
-                "RCON: доступен через bridge"
-            )
+            await self._send_server_status(callback.message)
             return
         if section == "search":
             self.admin_search_sessions.add(callback.from_user.id)
@@ -550,7 +565,12 @@ class ApplicationFlow:
             return
         if section == "console":
             self.console_sessions.add(callback.from_user.id)
-            await callback.message.answer("Отправьте команду для выполнения в консоли сервера. Можно начать с '/' или без. Пример: say Привет всем")
+            await callback.message.answer(
+                "<b>Консоль сервера</b>\n"
+                "Отправляйте команды сообщениями. Можно с <code>/</code> или без него.\n"
+                "Пример: <code>say Привет всем</code>\n\n"
+                "Чтобы выйти из режима консоли: <code>/cancel</code>"
+            )
             return
         if section == "player_menu":
             await self._send_player_menu(callback.message, callback.from_user.id)
@@ -563,8 +583,11 @@ class ApplicationFlow:
             return False
         # Console command session (admin)
         if message.from_user.id in self.console_sessions:
-            self.console_sessions.discard(message.from_user.id)
             command = message.text.strip()
+            if command.lower() in {"/cancel", "cancel", "отмена"}:
+                self.console_sessions.discard(message.from_user.id)
+                await message.answer("Режим консоли выключен.")
+                return True
             if command.startswith("/"):
                 command = command[1:].lstrip()
             if not command:
@@ -572,9 +595,16 @@ class ApplicationFlow:
                 return True
             try:
                 result = await self.bridge.exec_command(command)
-                await message.answer(f"Команда отправлена. Ответ: <code>{html.escape(result)}</code>")
+                await message.answer(
+                    "Команда отправлена в консоль.\n"
+                    f"<code>{html.escape(result)}</code>\n\n"
+                    "Следующая команда или <code>/cancel</code> для выхода."
+                )
             except Exception as exc:
-                await message.answer(f"Ошибка при отправке команды: <code>{html.escape(str(exc))}</code>")
+                await message.answer(
+                    f"Ошибка при отправке команды: <code>{html.escape(str(exc))}</code>\n\n"
+                    "Режим консоли остается включенным. <code>/cancel</code> для выхода."
+                )
             return True
         if message.text.startswith("/"):
             return False
@@ -633,6 +663,43 @@ class ApplicationFlow:
             caption="График заявок за последние 14 дней",
         )
 
+    async def _send_server_status(self, message: Message) -> None:
+        try:
+            status = await self.bridge.get_status()
+        except Exception as exc:
+            await message.answer(f"<b>Панель сервера</b>\nBridge недоступен: <code>{html.escape(str(exc))}</code>")
+            return
+
+        whitelist = "включен" if status.get("whitelist") else "выключен"
+        console = "включена" if status.get("console_enabled") else "выключена"
+        await message.answer(
+            "<b>Панель сервера</b>\n"
+            f"Bridge: <code>{html.escape(self.config.bridge.base_url)}</code>\n"
+            f"Сервер: <code>{html.escape(str(status.get('name', 'unknown')))}</code>\n"
+            f"Версия: <code>{html.escape(str(status.get('bukkit_version') or status.get('version') or 'unknown'))}</code>\n"
+            f"Онлайн: <code>{status.get('online', 0)}/{status.get('max_players', 0)}</code>\n"
+            f"Whitelist: <code>{whitelist}</code>\n"
+            f"Консоль bridge: <code>{console}</code>"
+        )
+
+    async def _send_server_online(self, message: Message) -> None:
+        try:
+            online = await self.bridge.get_online()
+        except Exception as exc:
+            await message.answer(f"<b>Онлайн</b>\nBridge недоступен: <code>{html.escape(str(exc))}</code>")
+            return
+
+        players = online.get("players", [])
+        if not isinstance(players, list):
+            players = []
+        names = [html.escape(str(player)) for player in players]
+        player_lines = "\n".join(f"• <code>{name}</code>" for name in names) if names else "Игроков онлайн нет."
+        await message.answer(
+            "<b>Онлайн</b>\n"
+            f"Игроков: <code>{online.get('online', len(names))}/{online.get('max_players', 0)}</code>\n\n"
+            f"{player_lines}"
+        )
+
     def _format_application(self, application: Application) -> str:
         username = f"@{application.username}" if application.username else "без username"
         lines = [
@@ -673,7 +740,11 @@ class ApplicationFlow:
                     InlineKeyboardButton(text="📊 Статистика заявок", callback_data="panel:stats"),
                 ],
                 [
+                    InlineKeyboardButton(text="🖥️ Панель сервера", callback_data="panel:server"),
                     InlineKeyboardButton(text="👥 Онлайн", callback_data="panel:online"),
+                ],
+                [
+                    InlineKeyboardButton(text="⌨️ Консоль", callback_data="panel:console"),
                     InlineKeyboardButton(text="🔍 Поиск", callback_data="panel:search"),
                 ],
                 [

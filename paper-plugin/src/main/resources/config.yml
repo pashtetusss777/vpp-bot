@@ -3,10 +3,9 @@ port: 8088
 token: "change-this-long-random-secret"
 
 console:
-  # По умолчанию выключено. Включайте только если доверяете сети и bridge token.
-  enabled: false
-  # Разрешенные префиксы команд. Не добавляйте op/deop/* без крайней необходимости.
+  # Enables /console/exec for the Telegram admin panel.
+  # Keep host bound to 127.0.0.1 or firewall this port, and use a strong token.
+  enabled: true
+  # "*" allows full console management. Replace with command prefixes for a stricter setup.
   allowed-commands:
-    - "say"
-    - "kick"
-    - "whitelist add"
+    - "*"
