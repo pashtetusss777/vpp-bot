@@ -69,6 +69,9 @@ class Application:
     answers: list[str]
     status: str
     created_at: str
+    decided_by: int | None = None
+    decided_at: str | None = None
+    decided_by_name: str | None = None
 
 
 def load_config() -> AppConfig:
@@ -134,6 +137,7 @@ class ApplicationStore:
                 )
                 """
             )
+            await self._ensure_column(db, "applications", "decided_by_name", "TEXT")
             await db.commit()
 
     async def create(self, telegram_id: int, username: str | None, nickname: str, answers: list[str]) -> int:
@@ -175,7 +179,7 @@ class ApplicationStore:
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 """
-                SELECT id, telegram_id, username, nickname, answers, status, created_at
+                SELECT id, telegram_id, username, nickname, answers, status, created_at, decided_by, decided_at, decided_by_name
                 FROM applications
                 WHERE id = ?
                 """,
@@ -186,7 +190,7 @@ class ApplicationStore:
 
     async def list_applications(self, status: str | None = None, limit: int = 10) -> list[Application]:
         query = """
-            SELECT id, telegram_id, username, nickname, answers, status, created_at
+            SELECT id, telegram_id, username, nickname, answers, status, created_at, decided_by, decided_at, decided_by_name
             FROM applications
         """
         params: tuple[Any, ...] = ()
@@ -207,7 +211,7 @@ class ApplicationStore:
             if clean.isdigit():
                 cursor = await db.execute(
                     """
-                    SELECT id, telegram_id, username, nickname, answers, status, created_at
+                    SELECT id, telegram_id, username, nickname, answers, status, created_at, decided_by, decided_at, decided_by_name
                     FROM applications
                     WHERE id = ? OR telegram_id = ?
                     ORDER BY id DESC
@@ -219,7 +223,7 @@ class ApplicationStore:
                 like = f"%{clean}%"
                 cursor = await db.execute(
                     """
-                    SELECT id, telegram_id, username, nickname, answers, status, created_at
+                    SELECT id, telegram_id, username, nickname, answers, status, created_at, decided_by, decided_at, decided_by_name
                     FROM applications
                     WHERE nickname LIKE ? OR username LIKE ?
                     ORDER BY id DESC
@@ -261,17 +265,24 @@ class ApplicationStore:
             row = await cursor.fetchone()
             return int(row[0]) if row else 0
 
-    async def decide(self, application_id: int, status: str, admin_id: int) -> None:
+    async def decide(self, application_id: int, status: str, admin_id: int, admin_name: str) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
                 UPDATE applications
-                SET status = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP
+                SET status = ?, decided_by = ?, decided_by_name = ?, decided_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (status, admin_id, application_id),
+                (status, admin_id, admin_name, application_id),
             )
             await db.commit()
+
+    @staticmethod
+    async def _ensure_column(db: aiosqlite.Connection, table: str, column: str, column_type: str) -> None:
+        cursor = await db.execute(f"PRAGMA table_info({table})")
+        columns = {str(row[1]) for row in await cursor.fetchall()}
+        if column not in columns:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
 
     @staticmethod
     def _application_from_row(row: tuple[Any, ...]) -> Application:
@@ -283,6 +294,9 @@ class ApplicationStore:
             answers=str(row[4]).splitlines(),
             status=str(row[5]),
             created_at=str(row[6]),
+            decided_by=int(row[7]) if len(row) > 7 and row[7] is not None else None,
+            decided_at=str(row[8]) if len(row) > 8 and row[8] else None,
+            decided_by_name=str(row[9]) if len(row) > 9 and row[9] else None,
         )
 
 
@@ -457,6 +471,9 @@ class ApplicationFlow:
                     answers=session.answers,
                     status="pending",
                     created_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    decided_by=None,
+                    decided_at=None,
+                    decided_by_name=None,
                 )
             ),
             reply_markup=self._application_keyboard(application_id),
@@ -489,6 +506,7 @@ class ApplicationFlow:
 
         telegram_id, nickname = pending
         admin_id = callback.from_user.id
+        admin_name = self._admin_display_name(callback.from_user)
 
         if action == "approve":
             try:
@@ -498,24 +516,26 @@ class ApplicationFlow:
                 await callback.message.answer(f"Ошибка bridge для заявки #{application_id}: {html.escape(str(exc))}")
                 return
 
-            await self.store.decide(application_id, "approved", admin_id)
+            await self.store.decide(application_id, "approved", admin_id, admin_name)
             await bot.send_message(telegram_id, self.config.messages.application_accepted)
             await callback.message.edit_reply_markup(reply_markup=None)
-            await callback.message.answer(f"Заявка #{application_id} принята — ник <code>{html.escape(nickname)}</code> добавлен в whitelist.")
+            await callback.message.answer(self._format_decision_notice(application_id, nickname, "ПРИНЯТА", admin_name, "✅"))
             await self._safe_answer(callback, Strings.ACTION_ACCEPTED)
             return
 
         if action == "reject":
-            await self.store.decide(application_id, "rejected", admin_id)
+            await self.store.decide(application_id, "rejected", admin_id, admin_name)
             await bot.send_message(telegram_id, self.config.messages.application_rejected)
             await callback.message.edit_reply_markup(reply_markup=None)
+            await callback.message.answer(self._format_decision_notice(application_id, nickname, "ОТКЛОНЕНА", admin_name, "❌"))
             await self._safe_answer(callback, Strings.ACTION_REJECTED)
             return
 
         if action == "ban":
-            await self.store.decide(application_id, "banned", admin_id)
+            await self.store.decide(application_id, "banned", admin_id, admin_name)
             await bot.send_message(telegram_id, self.config.messages.application_banned)
             await callback.message.edit_reply_markup(reply_markup=None)
+            await callback.message.answer(self._format_decision_notice(application_id, nickname, "ЗАБАНЕНА", admin_name, "⛔"))
             await self._safe_answer(callback, Strings.ACTION_BANNED)
 
     async def handle_admin_panel(self, callback: CallbackQuery, bot: Bot) -> None:
@@ -709,8 +729,16 @@ class ApplicationFlow:
             f"Telegram ID: <code>{application.telegram_id}</code>",
             f"Пользователь: {html.escape(username)}",
             f"Ник: <code>{html.escape(application.nickname)}</code>",
-            "",
         ]
+
+        if application.decided_by is not None:
+            admin_name = html.escape(application.decided_by_name or "админ")
+            decided = f"Решение: {admin_name} (<code>{application.decided_by}</code>)"
+            if application.decided_at:
+                decided += f" в <code>{html.escape(application.decided_at)}</code>"
+            lines.append(decided)
+
+        lines.append("")
 
         for question, answer in zip(self.config.questions, application.answers, strict=False):
             lines.append(f"<b>{html.escape(question)}</b>")
@@ -718,6 +746,14 @@ class ApplicationFlow:
             lines.append("")
 
         return "\n".join(lines).strip()
+
+    @staticmethod
+    def _admin_display_name(user: Any) -> str:
+        return str(user.full_name or user.username or user.id)
+
+    @staticmethod
+    def _format_decision_notice(application_id: int, nickname: str, status: str, admin_name: str, icon: str) -> str:
+        return f"{icon} Заявка #{application_id} ({html.escape(nickname)}) {status} ({html.escape(admin_name)})"
 
     @staticmethod
     def _application_keyboard(application_id: int) -> InlineKeyboardMarkup:

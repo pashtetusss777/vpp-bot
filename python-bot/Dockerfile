@@ -23,4 +23,11 @@ RUN /app/venv/bin/pip install --upgrade pip setuptools wheel \
 
 COPY . .
 
+RUN groupadd --gid 1000 pashtet \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash pashtet \
+    && mkdir -p /data \
+    && chown -R pashtet:pashtet /app /data
+
+USER pashtet
+
 CMD ["/app/venv/bin/python3", "bot.py"]

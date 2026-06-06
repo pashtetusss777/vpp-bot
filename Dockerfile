@@ -13,13 +13,14 @@ WORKDIR /app
 COPY python-bot/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
-# Create non-root user and set permissions
-RUN useradd --create-home --shell /bin/bash appuser \
+# Create non-root user that matches the VPS user used by the Docker stack
+RUN groupadd --gid 1000 pashtet \
+	&& useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash pashtet \
 	&& mkdir -p /app /data \
-	&& chown -R appuser:appuser /app /data
+	&& chown -R pashtet:pashtet /app /data
 
 COPY python-bot/ /app/
 
-USER appuser
+USER pashtet
 
 CMD ["python", "bot.py"]
