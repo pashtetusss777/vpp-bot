@@ -1,6 +1,7 @@
 ﻿import asyncio
 import html
 import re
+import shutil
 from urllib.parse import quote
 from collections import Counter
 from dataclasses import dataclass, field
@@ -51,6 +52,8 @@ class AppConfig:
     admins: set[int]
     bridge: BridgeConfig
     db_path: str
+    db_backup_dir: str
+    db_backup_keep_last: int
     questions: list[str]
     messages: BotMessages
 
@@ -109,6 +112,10 @@ def load_config() -> AppConfig:
     db_path = Path(raw.get("DATABASE", {}).get("PATH", "applications.db"))
     if not db_path.is_absolute():
         db_path = config_path.parent / db_path
+    database = raw.get("DATABASE", {})
+    db_backup_dir = Path(database.get("BACKUP_DIR", db_path.parent / "backups"))
+    if not db_backup_dir.is_absolute():
+        db_backup_dir = config_path.parent / db_backup_dir
 
     messages = raw["MESSAGES"]
     bridge = raw.get("BRIDGE", {})
@@ -124,6 +131,8 @@ def load_config() -> AppConfig:
             timeout_seconds=int(bridge.get("TIMEOUT_SECONDS", 5)),
         ),
         db_path=str(db_path),
+        db_backup_dir=str(db_backup_dir),
+        db_backup_keep_last=int(database.get("BACKUP_KEEP_LAST", 30)),
         questions=questions,
         messages=BotMessages(
             enter_nickname=str(messages["ENTER_NICKNAME"]),
@@ -139,10 +148,15 @@ def load_config() -> AppConfig:
 
 
 class ApplicationStore:
-    def __init__(self, db_path: str) -> None:
-        self.db_path = db_path
+    def __init__(self, db_path: str, backup_dir: str, backup_keep_last: int = 30) -> None:
+        self.db_path = Path(db_path)
+        self.backup_dir = Path(backup_dir)
+        self.backup_keep_last = max(1, backup_keep_last)
 
     async def init(self) -> None:
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        self._restore_latest_backup_if_needed()
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
@@ -162,6 +176,7 @@ class ApplicationStore:
             await self._ensure_column(db, "applications", "decided_by_name", "TEXT")
             await self._ensure_column(db, "applications", "decision_reason", "TEXT")
             await db.commit()
+        self._backup_now("init")
 
     async def create(self, telegram_id: int, username: str | None, nickname: str, answers: list[str]) -> int:
         async with aiosqlite.connect(self.db_path) as db:
@@ -179,6 +194,7 @@ class ApplicationStore:
                 (telegram_id, username, nickname, "\n".join(answers)),
             )
             await db.commit()
+            self._backup_now("create")
             return int(cursor.lastrowid)
 
     async def get_latest_status(self, telegram_id: int) -> str | None:
@@ -336,6 +352,7 @@ class ApplicationStore:
                 (status, admin_id, admin_name, reason, application_id),
             )
             await db.commit()
+        self._backup_now("decide")
 
     async def unban_user(self, telegram_id: int, admin_id: int, admin_name: str) -> int:
         async with aiosqlite.connect(self.db_path) as db:
@@ -352,7 +369,25 @@ class ApplicationStore:
                 (admin_id, admin_name, telegram_id),
             )
             await db.commit()
+            self._backup_now("unban")
             return cursor.rowcount
+
+    def _restore_latest_backup_if_needed(self) -> None:
+        if self.db_path.exists():
+            return
+        backups = sorted(self.backup_dir.glob(f"{self.db_path.stem}-*.db"))
+        if backups:
+            shutil.copy2(backups[-1], self.db_path)
+
+    def _backup_now(self, reason: str) -> None:
+        if not self.db_path.exists():
+            return
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        backup_path = self.backup_dir / f"{self.db_path.stem}-{timestamp}-{reason}.db"
+        shutil.copy2(self.db_path, backup_path)
+        backups = sorted(self.backup_dir.glob(f"{self.db_path.stem}-*.db"))
+        for old_backup in backups[:-self.backup_keep_last]:
+            old_backup.unlink(missing_ok=True)
 
     @staticmethod
     async def _ensure_column(db: aiosqlite.Connection, table: str, column: str, column_type: str) -> None:
@@ -1222,7 +1257,7 @@ class ApplicationFlow:
 
 async def main() -> None:
     config = load_config()
-    store = ApplicationStore(config.db_path)
+    store = ApplicationStore(config.db_path, config.db_backup_dir, config.db_backup_keep_last)
     await store.init()
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode="HTML"))

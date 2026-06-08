@@ -36,3 +36,5 @@ BRIDGE:
 
 DATABASE:
   PATH: "applications.db"
+  BACKUP_DIR: "backups"
+  BACKUP_KEEP_LAST: 30
