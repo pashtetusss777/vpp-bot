@@ -11,6 +11,7 @@ public enum Strings {
     CONSOLE_EXEC_ENDPOINT("/console/exec"),
     SERVER_STATUS_ENDPOINT("/server/status"),
     SERVER_ONLINE_ENDPOINT("/server/online"),
+    PLAYER_INFO_ENDPOINT("/player/info"),
     ERROR_METHOD_NOT_ALLOWED("{\"error\":\"method_not_allowed\"}"),
     ERROR_UNAUTHORIZED("{\"error\":\"unauthorized\"}"),
     ERROR_INVALID_JSON("{\"error\":\"invalid_json\"}"),

@@ -8,3 +8,4 @@ python-bot/test-*.png
 paper-plugin/dependency-reduced-pom.xml
 paper-plugin/target/
 *.log
+python-bot.zip

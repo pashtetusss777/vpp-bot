@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -46,6 +47,7 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
             server.createContext(Strings.WHITELIST_ADD_ENDPOINT.get(), this::handleWhitelistAdd);
             server.createContext(Strings.SERVER_STATUS_ENDPOINT.get(), this::handleServerStatus);
             server.createContext(Strings.SERVER_ONLINE_ENDPOINT.get(), this::handleServerOnline);
+            server.createContext(Strings.PLAYER_INFO_ENDPOINT.get(), this::handlePlayerInfo);
             if (getConfig().getBoolean("console.enabled", false)) {
                 server.createContext(Strings.CONSOLE_EXEC_ENDPOINT.get(), this::handleConsoleExec);
             }
@@ -202,6 +204,51 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
         response.addProperty("max_players", Bukkit.getMaxPlayers());
         response.add("players", gson.toJsonTree(players));
         sendJson(exchange, 200, gson.toJson(response));
+    }
+
+    private void handlePlayerInfo(HttpExchange exchange) throws IOException {
+        if (!exchange.getRequestMethod().equalsIgnoreCase("GET")) {
+            sendJson(exchange, 405, Strings.ERROR_METHOD_NOT_ALLOWED.get());
+            return;
+        }
+
+        if (!isAuthorized(exchange)) {
+            sendJson(exchange, 401, Strings.ERROR_UNAUTHORIZED.get());
+            return;
+        }
+
+        String nickname = getQueryParam(exchange, "name");
+        if (nickname == null || !NICKNAME_PATTERN.matcher(nickname).matches()) {
+            sendJson(exchange, 422, Strings.ERROR_INVALID_NICKNAME.get());
+            return;
+        }
+
+        Player player = Bukkit.getPlayerExact(nickname);
+        JsonObject response = new JsonObject();
+        response.addProperty("status", "ok");
+        response.addProperty("name", nickname);
+        response.addProperty("online", player != null);
+        if (player != null && player.getAddress() != null) {
+            InetSocketAddress address = player.getAddress();
+            response.addProperty("ip", address.getAddress().getHostAddress());
+            response.addProperty("port", address.getPort());
+        }
+        sendJson(exchange, 200, gson.toJson(response));
+    }
+
+    private String getQueryParam(HttpExchange exchange, String name) {
+        String query = exchange.getRequestURI().getRawQuery();
+        if (query == null || query.isBlank()) {
+            return null;
+        }
+        for (String part : query.split("&")) {
+            String[] pair = part.split("=", 2);
+            String key = URLDecoder.decode(pair[0], StandardCharsets.UTF_8);
+            if (key.equals(name)) {
+                return pair.length > 1 ? URLDecoder.decode(pair[1], StandardCharsets.UTF_8) : "";
+            }
+        }
+        return null;
     }
 
     private boolean isAuthorized(HttpExchange exchange) {

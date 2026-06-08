@@ -46,6 +46,10 @@ public final class Bukkit {
         return List.of(new Player("Steve"));
     }
 
+    public static Player getPlayerExact(String name) {
+        return new Player(name);
+    }
+
     public static int getMaxPlayers() {
         return 20;
     }
