@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import html
 import re
 import shutil
@@ -17,7 +17,13 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
-from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 from PIL import Image, ImageDraw, ImageFont
 from strings import Strings
 
@@ -102,7 +108,9 @@ class ApplicationBlockedError(Exception):
 def load_config() -> AppConfig:
     config_path = Path(__file__).with_name("config.yml")
     if not config_path.exists():
-        raise RuntimeError("Не найден python-bot/config.yml. Скопируй config.example.yml и заполни значения.")
+        raise RuntimeError(
+            "Не найден python-bot/config.yml. Скопируй config.example.yml и заполни значения."
+        )
 
     raw: dict[str, Any] = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     questions = list(raw["QUESTIONS"])
@@ -137,7 +145,11 @@ def load_config() -> AppConfig:
         messages=BotMessages(
             enter_nickname=str(messages["ENTER_NICKNAME"]),
             form_start=str(messages["FORM_START"]),
-            rules=str(messages.get("RULES", "Нажмите кнопку ниже, когда ознакомитесь с правилами.")),
+            rules=str(
+                messages.get(
+                    "RULES", "Нажмите кнопку ниже, когда ознакомитесь с правилами."
+                )
+            ),
             form_complete=str(messages["FORM_COMPLETE"]),
             already_applied=str(messages["ALREADY_APPLIED"]),
             application_accepted=str(messages["APPLICATION_ACCEPTED"]),
@@ -148,7 +160,9 @@ def load_config() -> AppConfig:
 
 
 class ApplicationStore:
-    def __init__(self, db_path: str, backup_dir: str, backup_keep_last: int = 30) -> None:
+    def __init__(
+        self, db_path: str, backup_dir: str, backup_keep_last: int = 30
+    ) -> None:
         self.db_path = Path(db_path)
         self.backup_dir = Path(backup_dir)
         self.backup_keep_last = max(1, backup_keep_last)
@@ -178,7 +192,9 @@ class ApplicationStore:
             await db.commit()
         self._backup_now("init")
 
-    async def create(self, telegram_id: int, username: str | None, nickname: str, answers: list[str]) -> int:
+    async def create(
+        self, telegram_id: int, username: str | None, nickname: str, answers: list[str]
+    ) -> int:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             gate_status = await self._get_gate_status(db, telegram_id)
@@ -216,7 +232,9 @@ class ApplicationStore:
             return await self._get_gate_status(db, telegram_id)
 
     @staticmethod
-    async def _get_gate_status(db: aiosqlite.Connection, telegram_id: int) -> str | None:
+    async def _get_gate_status(
+        db: aiosqlite.Connection, telegram_id: int
+    ) -> str | None:
         cursor = await db.execute(
             """
             SELECT status FROM applications
@@ -258,7 +276,9 @@ class ApplicationStore:
             row = await cursor.fetchone()
             return self._application_from_row(row) if row else None
 
-    async def list_applications(self, status: str | None = None, limit: int = 10) -> list[Application]:
+    async def list_applications(
+        self, status: str | None = None, limit: int = 10
+    ) -> list[Application]:
         query = """
             SELECT id, telegram_id, username, nickname, answers, status, created_at, decided_by, decided_at, decided_by_name, decision_reason
             FROM applications
@@ -306,7 +326,9 @@ class ApplicationStore:
 
     async def counts_by_status(self) -> dict[str, int]:
         async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("SELECT status, COUNT(*) FROM applications GROUP BY status")
+            cursor = await db.execute(
+                "SELECT status, COUNT(*) FROM applications GROUP BY status"
+            )
             rows = await cursor.fetchall()
             return {str(status): int(count) for status, count in rows}
 
@@ -327,21 +349,38 @@ class ApplicationStore:
         found = {str(day): int(count) for day, count in rows}
         today = datetime.now().date()
         start = today - timedelta(days=days - 1)
-        return [((start + timedelta(days=offset)).isoformat(), found.get((start + timedelta(days=offset)).isoformat(), 0)) for offset in range(days)]
+        return [
+            (
+                (start + timedelta(days=offset)).isoformat(),
+                found.get((start + timedelta(days=offset)).isoformat(), 0),
+            )
+            for offset in range(days)
+        ]
 
     async def user_count(self) -> int:
         async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("SELECT COUNT(DISTINCT telegram_id) FROM applications")
+            cursor = await db.execute(
+                "SELECT COUNT(DISTINCT telegram_id) FROM applications"
+            )
             row = await cursor.fetchone()
             return int(row[0]) if row else 0
 
     async def user_ids(self) -> list[int]:
         async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("SELECT DISTINCT telegram_id FROM applications ORDER BY telegram_id")
+            cursor = await db.execute(
+                "SELECT DISTINCT telegram_id FROM applications ORDER BY telegram_id"
+            )
             rows = await cursor.fetchall()
             return [int(row[0]) for row in rows]
 
-    async def decide(self, application_id: int, status: str, admin_id: int, admin_name: str, reason: str | None = None) -> None:
+    async def decide(
+        self,
+        application_id: int,
+        status: str,
+        admin_id: int,
+        admin_name: str,
+        reason: str | None = None,
+    ) -> None:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
@@ -386,11 +425,13 @@ class ApplicationStore:
         backup_path = self.backup_dir / f"{self.db_path.stem}-{timestamp}-{reason}.db"
         shutil.copy2(self.db_path, backup_path)
         backups = sorted(self.backup_dir.glob(f"{self.db_path.stem}-*.db"))
-        for old_backup in backups[:-self.backup_keep_last]:
+        for old_backup in backups[: -self.backup_keep_last]:
             old_backup.unlink(missing_ok=True)
 
     @staticmethod
-    async def _ensure_column(db: aiosqlite.Connection, table: str, column: str, column_type: str) -> None:
+    async def _ensure_column(
+        db: aiosqlite.Connection, table: str, column: str, column_type: str
+    ) -> None:
         cursor = await db.execute(f"PRAGMA table_info({table})")
         columns = {str(row[1]) for row in await cursor.fetchall()}
         if column not in columns:
@@ -435,10 +476,14 @@ class MinecraftBridge:
         payload = {"nickname": nickname}
 
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            async with session.post(f"{self.config.base_url}/whitelist/add", json=payload) as response:
+            async with session.post(
+                f"{self.config.base_url}/whitelist/add", json=payload
+            ) as response:
                 body = await response.text()
                 if response.status >= 400:
-                    raise RuntimeError(f"Bridge returned HTTP {response.status}: {body}")
+                    raise RuntimeError(
+                        f"Bridge returned HTTP {response.status}: {body}"
+                    )
 
     async def exec_command(self, command: str) -> str:
         """Send a console command to the bridge and return the raw response body."""
@@ -447,10 +492,14 @@ class MinecraftBridge:
         payload = {"command": command}
 
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            async with session.post(f"{self.config.base_url}/console/exec", json=payload) as response:
+            async with session.post(
+                f"{self.config.base_url}/console/exec", json=payload
+            ) as response:
                 body = await response.text()
                 if response.status >= 400:
-                    raise RuntimeError(f"Bridge returned HTTP {response.status}: {body}")
+                    raise RuntimeError(
+                        f"Bridge returned HTTP {response.status}: {body}"
+                    )
                 return body
 
     async def _get_json(self, endpoint: str) -> dict[str, Any]:
@@ -461,7 +510,9 @@ class MinecraftBridge:
             async with session.get(f"{self.config.base_url}{endpoint}") as response:
                 body = await response.text()
                 if response.status >= 400:
-                    raise RuntimeError(f"Bridge returned HTTP {response.status}: {body}")
+                    raise RuntimeError(
+                        f"Bridge returned HTTP {response.status}: {body}"
+                    )
                 try:
                     data = await response.json(content_type=None)
                 except aiohttp.ContentTypeError as exc:
@@ -472,7 +523,9 @@ class MinecraftBridge:
 
 
 class ApplicationFlow:
-    def __init__(self, config: AppConfig, store: ApplicationStore, bridge: MinecraftBridge) -> None:
+    def __init__(
+        self, config: AppConfig, store: ApplicationStore, bridge: MinecraftBridge
+    ) -> None:
         self.config = config
         self.store = store
         self.bridge = bridge
@@ -486,22 +539,32 @@ class ApplicationFlow:
 
     def _register_handlers(self) -> None:
         self.router.message(Command("start", "panel"))(self.start)
-        self.router.message(F.chat.id == self.config.admin_chat_id)(self.handle_admin_message)
+        self.router.message(F.chat.id == self.config.admin_chat_id)(
+            self.handle_admin_message
+        )
         self.router.message(F.chat.type == "private")(self.answer_question)
         self.router.callback_query(F.data.startswith("flow:"))(self.handle_flow)
         self.router.callback_query(F.data.startswith("app:"))(self.handle_admin_action)
-        self.router.callback_query(F.data.startswith("player:"))(self.handle_player_action)
+        self.router.callback_query(F.data.startswith("player:"))(
+            self.handle_player_action
+        )
         self.router.callback_query(F.data.startswith("panel:"))(self.handle_admin_panel)
 
     async def start(self, message: Message) -> None:
         if message.chat.type != "private":
-            if message.chat.id == self.config.admin_chat_id and self._is_admin(message.from_user.id):
-                await message.answer(Strings.ADMIN_PANEL, reply_markup=self._admin_panel_keyboard())
+            if message.chat.id == self.config.admin_chat_id and self._is_admin(
+                message.from_user.id
+            ):
+                await message.answer(
+                    Strings.ADMIN_PANEL, reply_markup=self._admin_panel_keyboard()
+                )
             return
 
         if self._is_admin(message.from_user.id):
             await self._send_player_status(message, message.from_user.id)
-            await message.answer(Strings.ADMIN_PANEL, reply_markup=self._admin_panel_keyboard())
+            await message.answer(
+                Strings.ADMIN_PANEL, reply_markup=self._admin_panel_keyboard()
+            )
             return
 
         await self._send_player_menu(message, message.from_user.id)
@@ -521,13 +584,21 @@ class ApplicationFlow:
         await message.answer(
             self.config.messages.form_start,
             reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text=Strings.BUTTON_START, callback_data="flow:start")]]
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=Strings.BUTTON_START, callback_data="flow:start"
+                        )
+                    ]
+                ]
             ),
         )
 
     async def handle_flow(self, callback: CallbackQuery) -> None:
         if callback.message.chat.type != "private":
-            await self._safe_answer(callback, Strings.ONLY_PRIVATE_ALERT, show_alert=True)
+            await self._safe_answer(
+                callback, Strings.ONLY_PRIVATE_ALERT, show_alert=True
+            )
             return
 
         action = callback.data.split(":", maxsplit=1)[1]
@@ -542,19 +613,35 @@ class ApplicationFlow:
 
         if action == "start":
             if user_id in self.sessions:
-                await self._safe_answer(callback, "Анкета уже начата. Ответьте на текущий вопрос.", show_alert=True)
+                await self._safe_answer(
+                    callback,
+                    "Анкета уже начата. Ответьте на текущий вопрос.",
+                    show_alert=True,
+                )
                 return
             await self._safe_answer(callback)
             await self._safe_clear_reply_markup(callback.message)
             await callback.message.answer(
                 self.config.messages.rules,
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Я ознакомлен", callback_data="flow:agree")]]),
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="Я ознакомлен", callback_data="flow:agree"
+                            )
+                        ]
+                    ]
+                ),
             )
             return
 
         if action == "agree":
             if user_id in self.sessions:
-                await self._safe_answer(callback, "Анкета уже начата. Ответьте на текущий вопрос.", show_alert=True)
+                await self._safe_answer(
+                    callback,
+                    "Анкета уже начата. Ответьте на текущий вопрос.",
+                    show_alert=True,
+                )
                 return
             self.sessions[user_id] = ApplicationSession()
             await self._safe_answer(callback)
@@ -612,7 +699,9 @@ class ApplicationFlow:
             )
         except ApplicationBlockedError as exc:
             self.sessions.pop(user_id, None)
-            await message.answer(self._status_message(exc.status) or self.config.messages.already_applied)
+            await message.answer(
+                self._status_message(exc.status) or self.config.messages.already_applied
+            )
             return
         self.sessions.pop(user_id, None)
 
@@ -647,28 +736,50 @@ class ApplicationFlow:
         if action == "view":
             application = await self.store.get_by_id(application_id)
             if application is None:
-                await self._safe_answer(callback, Strings.APPLICATION_NOT_FOUND, show_alert=True)
+                await self._safe_answer(
+                    callback, Strings.APPLICATION_NOT_FOUND, show_alert=True
+                )
                 return
 
             await self._safe_answer(callback)
-            reply_markup = self._application_keyboard(application.id) if application.status == "pending" else None
+            reply_markup = (
+                self._application_keyboard(application.id)
+                if application.status == "pending"
+                else None
+            )
             if application.status == "banned":
                 reply_markup = self._banned_application_keyboard(application.id)
-            await callback.message.answer(self._format_application(application), reply_markup=reply_markup)
+            await callback.message.answer(
+                self._format_application(application), reply_markup=reply_markup
+            )
             return
 
         pending = await self.store.get_pending(application_id)
 
         if pending is None:
             application = await self.store.get_by_id(application_id)
-            if action == "unban" and application is not None and application.status == "banned":
+            if (
+                action == "unban"
+                and application is not None
+                and application.status == "banned"
+            ):
                 admin_id = callback.from_user.id
                 admin_name = self._admin_display_name(callback.from_user)
-                updated = await self.store.unban_user(application.telegram_id, admin_id, admin_name)
-                await self._safe_answer(callback, "Разбанено ✅" if updated else "Бан не найден", show_alert=True)
-                await callback.message.answer(f"♻️ Пользователь <code>{application.telegram_id}</code> разбанен ({html.escape(admin_name)}).")
+                updated = await self.store.unban_user(
+                    application.telegram_id, admin_id, admin_name
+                )
+                await self._safe_answer(
+                    callback,
+                    "Разбанено ✅" if updated else "Бан не найден",
+                    show_alert=True,
+                )
+                await callback.message.answer(
+                    f"♻️ Пользователь <code>{application.telegram_id}</code> разбанен ({html.escape(admin_name)})."
+                )
                 return
-            await self._safe_answer(callback, Strings.APPLICATION_ALREADY_PROCESSED, show_alert=True)
+            await self._safe_answer(
+                callback, Strings.APPLICATION_ALREADY_PROCESSED, show_alert=True
+            )
             return
 
         telegram_id, nickname = pending
@@ -679,15 +790,25 @@ class ApplicationFlow:
             try:
                 await self.bridge.add_to_whitelist(nickname)
             except Exception as exc:
-                await self._safe_answer(callback, Strings.WHITELIST_ADD_FAILED, show_alert=True)
-                await callback.message.answer(f"Ошибка bridge для заявки #{application_id}: {html.escape(str(exc))}")
+                await self._safe_answer(
+                    callback, Strings.WHITELIST_ADD_FAILED, show_alert=True
+                )
+                await callback.message.answer(
+                    f"Ошибка bridge для заявки #{application_id}: {html.escape(str(exc))}"
+                )
                 return
 
             await self.store.decide(application_id, "approved", admin_id, admin_name)
             self.sessions.pop(telegram_id, None)
-            await bot.send_message(telegram_id, self.config.messages.application_accepted)
+            await bot.send_message(
+                telegram_id, self.config.messages.application_accepted
+            )
             await callback.message.edit_reply_markup(reply_markup=None)
-            await callback.message.answer(self._format_decision_notice(application_id, nickname, "ПРИНЯТА", admin_name, "✅"))
+            await callback.message.answer(
+                self._format_decision_notice(
+                    application_id, nickname, "ПРИНЯТА", admin_name, "✅"
+                )
+            )
             await self._safe_answer(callback, Strings.ACTION_ACCEPTED)
             return
 
@@ -711,7 +832,11 @@ class ApplicationFlow:
             self.sessions.pop(telegram_id, None)
             await bot.send_message(telegram_id, self.config.messages.application_banned)
             await callback.message.edit_reply_markup(reply_markup=None)
-            await callback.message.answer(self._format_decision_notice(application_id, nickname, "ЗАБАНЕНА", admin_name, "⛔"))
+            await callback.message.answer(
+                self._format_decision_notice(
+                    application_id, nickname, "ЗАБАНЕНА", admin_name, "⛔"
+                )
+            )
             await self._safe_answer(callback, Strings.ACTION_BANNED)
 
     async def handle_player_action(self, callback: CallbackQuery) -> None:
@@ -732,7 +857,9 @@ class ApplicationFlow:
             try:
                 info = await self.bridge.get_player_info(nickname)
             except Exception as exc:
-                await callback.message.answer(f"Не удалось получить данные игрока: <code>{html.escape(str(exc))}</code>")
+                await callback.message.answer(
+                    f"Не удалось получить данные игрока: <code>{html.escape(str(exc))}</code>"
+                )
                 return
 
             ip = html.escape(str(info.get("ip") or "неизвестно"))
@@ -748,9 +875,13 @@ class ApplicationFlow:
             try:
                 await self.bridge.kick_player(nickname)
             except Exception as exc:
-                await callback.message.answer(f"Не удалось кикнуть игрока: <code>{html.escape(str(exc))}</code>")
+                await callback.message.answer(
+                    f"Не удалось кикнуть игрока: <code>{html.escape(str(exc))}</code>"
+                )
                 return
-            await callback.message.answer(f"👢 Игрок <code>{html.escape(nickname)}</code> кикнут.")
+            await callback.message.answer(
+                f"👢 Игрок <code>{html.escape(nickname)}</code> кикнут."
+            )
 
     async def handle_admin_panel(self, callback: CallbackQuery, bot: Bot) -> None:
         if not await self._allow_admin_callback(callback):
@@ -773,11 +904,15 @@ class ApplicationFlow:
             return
         if section == "search":
             self.admin_search_sessions.add(callback.from_user.id)
-            await callback.message.answer("Отправьте ник, username, Telegram ID или номер заявки. Например: <code>#12</code>.")
+            await callback.message.answer(
+                "Отправьте ник, username, Telegram ID или номер заявки. Например: <code>#12</code>."
+            )
             return
         if section == "users":
             user_count = await self.store.user_count()
-            await callback.message.answer(f"<b>Пользователи бота</b>\nУникальных подавших заявки: <code>{user_count}</code>")
+            await callback.message.answer(
+                f"<b>Пользователи бота</b>\nУникальных подавших заявки: <code>{user_count}</code>"
+            )
             return
         if section == "info":
             counts = Counter(await self.store.counts_by_status())
@@ -791,7 +926,13 @@ class ApplicationFlow:
             )
             return
         if section == "admins":
-            admins = "\n".join(f"<code>{admin_id}</code>" for admin_id in sorted(self.config.admins)) or "Все пользователи считаются админами."
+            admins = (
+                "\n".join(
+                    f"<code>{admin_id}</code>"
+                    for admin_id in sorted(self.config.admins)
+                )
+                or "Все пользователи считаются админами."
+            )
             await callback.message.answer(f"<b>Админы</b>\n{admins}")
             return
         if section == "broadcast":
@@ -839,7 +980,9 @@ class ApplicationFlow:
                     sent += 1
                 except Exception:
                     failed += 1
-            await message.answer(f"📣 Рассылка завершена. Отправлено: <code>{sent}</code>, ошибок: <code>{failed}</code>.")
+            await message.answer(
+                f"📣 Рассылка завершена. Отправлено: <code>{sent}</code>, ошибок: <code>{failed}</code>."
+            )
             return True
 
         if message.from_user.id in self.reject_sessions:
@@ -850,7 +993,9 @@ class ApplicationFlow:
                 await message.answer("Отклонение заявки отменено.")
                 return True
             if not reason:
-                await message.answer("Причина не может быть пустой. Отправьте текст причины или <code>/cancel</code>.")
+                await message.answer(
+                    "Причина не может быть пустой. Отправьте текст причины или <code>/cancel</code>."
+                )
                 return True
 
             pending = await self.store.get_pending(reject_session.application_id)
@@ -861,10 +1006,14 @@ class ApplicationFlow:
 
             admin_id = message.from_user.id
             admin_name = self._admin_display_name(message.from_user)
-            await self.store.decide(reject_session.application_id, "rejected", admin_id, admin_name, reason)
+            await self.store.decide(
+                reject_session.application_id, "rejected", admin_id, admin_name, reason
+            )
             self.sessions.pop(reject_session.telegram_id, None)
             self.reject_sessions.pop(message.from_user.id, None)
-            await bot.send_message(reject_session.telegram_id, self._format_rejection_message(reason))
+            await bot.send_message(
+                reject_session.telegram_id, self._format_rejection_message(reason)
+            )
             try:
                 await bot.edit_message_reply_markup(
                     chat_id=reject_session.message_chat_id,
@@ -873,7 +1022,15 @@ class ApplicationFlow:
                 )
             except TelegramBadRequest:
                 pass
-            await message.answer(self._format_decision_notice(reject_session.application_id, reject_session.nickname, "ОТКЛОНЕНА", admin_name, "❌"))
+            await message.answer(
+                self._format_decision_notice(
+                    reject_session.application_id,
+                    reject_session.nickname,
+                    "ОТКЛОНЕНА",
+                    admin_name,
+                    "❌",
+                )
+            )
             return True
 
         # Console command session (admin)
@@ -915,11 +1072,24 @@ class ApplicationFlow:
         lines = ["<b>Результаты поиска</b>"]
         buttons = []
         for application in applications:
-            username = f"@{application.username}" if application.username else "без username"
-            lines.append(f"#{application.id} | <code>{html.escape(application.nickname)}</code> | {application.status} | {html.escape(username)}")
-            buttons.append([InlineKeyboardButton(text=f"Открыть #{application.id}", callback_data=f"app:view:{application.id}")])
+            username = (
+                f"@{application.username}" if application.username else "без username"
+            )
+            lines.append(
+                f"#{application.id} | <code>{html.escape(application.nickname)}</code> | {application.status} | {html.escape(username)}"
+            )
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"Открыть #{application.id}",
+                        callback_data=f"app:view:{application.id}",
+                    )
+                ]
+            )
 
-        await message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await message.answer(
+            "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
         return True
 
     async def _send_application_list(self, message: Message) -> None:
@@ -931,11 +1101,24 @@ class ApplicationFlow:
         lines = ["<b>Ожидающие заявки</b>"]
         buttons = []
         for application in applications:
-            username = f"@{application.username}" if application.username else "без username"
-            lines.append(f"#{application.id} | <code>{html.escape(application.nickname)}</code> | {html.escape(username)}")
-            buttons.append([InlineKeyboardButton(text=f"Открыть #{application.id}", callback_data=f"app:view:{application.id}")])
+            username = (
+                f"@{application.username}" if application.username else "без username"
+            )
+            lines.append(
+                f"#{application.id} | <code>{html.escape(application.nickname)}</code> | {html.escape(username)}"
+            )
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"Открыть #{application.id}",
+                        callback_data=f"app:view:{application.id}",
+                    )
+                ]
+            )
 
-        await message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await message.answer(
+            "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+        )
 
     async def _send_stats(self, message: Message, bot: Bot) -> None:
         counts = Counter(await self.store.counts_by_status())
@@ -962,7 +1145,9 @@ class ApplicationFlow:
         try:
             status = await self.bridge.get_status()
         except Exception as exc:
-            await message.answer(f"<b>Панель сервера</b>\nBridge недоступен: <code>{html.escape(str(exc))}</code>")
+            await message.answer(
+                f"<b>Панель сервера</b>\nBridge недоступен: <code>{html.escape(str(exc))}</code>"
+            )
             return
 
         whitelist = "включен" if status.get("whitelist") else "выключен"
@@ -981,24 +1166,41 @@ class ApplicationFlow:
         try:
             online = await self.bridge.get_online()
         except Exception as exc:
-            await message.answer(f"<b>Онлайн</b>\nBridge недоступен: <code>{html.escape(str(exc))}</code>")
+            await message.answer(
+                f"<b>Онлайн</b>\nBridge недоступен: <code>{html.escape(str(exc))}</code>"
+            )
             return
 
         players = online.get("players", [])
         if not isinstance(players, list):
             players = []
         names = [html.escape(str(player)) for player in players]
-        player_lines = "\n".join(f"• <code>{name}</code>" for name in names) if names else "Игроков онлайн нет."
-        buttons = [[InlineKeyboardButton(text=str(player), callback_data=f"player:menu:{player}")] for player in players[:20]]
+        player_lines = (
+            "\n".join(f"• <code>{name}</code>" for name in names)
+            if names
+            else "Игроков онлайн нет."
+        )
+        buttons = [
+            [
+                InlineKeyboardButton(
+                    text=str(player), callback_data=f"player:menu:{player}"
+                )
+            ]
+            for player in players[:20]
+        ]
         await message.answer(
             "<b>Онлайн</b>\n"
             f"Игроков: <code>{online.get('online', len(names))}/{online.get('max_players', 0)}</code>\n\n"
             f"{player_lines}",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+            if buttons
+            else None,
         )
 
     def _format_application(self, application: Application) -> str:
-        username = f"@{application.username}" if application.username else "без username"
+        username = (
+            f"@{application.username}" if application.username else "без username"
+        )
         lines = [
             f"<b>Заявка #{application.id}</b>",
             f"Статус: <code>{application.status}</code>",
@@ -1019,7 +1221,9 @@ class ApplicationFlow:
 
         lines.append("")
 
-        for question, answer in zip(self.config.questions, application.answers, strict=False):
+        for question, answer in zip(
+            self.config.questions, application.answers, strict=False
+        ):
             lines.append(f"<b>{html.escape(question)}</b>")
             lines.append(html.escape(answer))
             lines.append("")
@@ -1031,7 +1235,9 @@ class ApplicationFlow:
         return str(user.full_name or user.username or user.id)
 
     @staticmethod
-    def _format_decision_notice(application_id: int, nickname: str, status: str, admin_name: str, icon: str) -> str:
+    def _format_decision_notice(
+        application_id: int, nickname: str, status: str, admin_name: str, icon: str
+    ) -> str:
         return f"{icon} Заявка #{application_id} ({html.escape(nickname)}) {status} ({html.escape(admin_name)})"
 
     def _format_rejection_message(self, reason: str) -> str:
@@ -1042,9 +1248,15 @@ class ApplicationFlow:
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="Принять", callback_data=f"app:approve:{application_id}"),
-                    InlineKeyboardButton(text="Отклонить", callback_data=f"app:reject:{application_id}"),
-                    InlineKeyboardButton(text="Бан", callback_data=f"app:ban:{application_id}"),
+                    InlineKeyboardButton(
+                        text="Принять", callback_data=f"app:approve:{application_id}"
+                    ),
+                    InlineKeyboardButton(
+                        text="Отклонить", callback_data=f"app:reject:{application_id}"
+                    ),
+                    InlineKeyboardButton(
+                        text="Бан", callback_data=f"app:ban:{application_id}"
+                    ),
                 ]
             ]
         )
@@ -1052,7 +1264,13 @@ class ApplicationFlow:
     @staticmethod
     def _banned_application_keyboard(application_id: int) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="♻️ Разбанить", callback_data=f"app:unban:{application_id}")]]
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="♻️ Разбанить", callback_data=f"app:unban:{application_id}"
+                    )
+                ]
+            ]
         )
 
     @staticmethod
@@ -1060,8 +1278,12 @@ class ApplicationFlow:
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="ℹ️ Инфо", callback_data=f"player:info:{nickname}"),
-                    InlineKeyboardButton(text="👢 Кик", callback_data=f"player:kick:{nickname}"),
+                    InlineKeyboardButton(
+                        text="ℹ️ Инфо", callback_data=f"player:info:{nickname}"
+                    ),
+                    InlineKeyboardButton(
+                        text="👢 Кик", callback_data=f"player:kick:{nickname}"
+                    ),
                 ]
             ]
         )
@@ -1071,23 +1293,39 @@ class ApplicationFlow:
         return InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="📝 Заявки", callback_data="panel:applications"),
-                    InlineKeyboardButton(text="📊 Статистика заявок", callback_data="panel:stats"),
+                    InlineKeyboardButton(
+                        text="📝 Заявки", callback_data="panel:applications"
+                    ),
+                    InlineKeyboardButton(
+                        text="📊 Статистика заявок", callback_data="panel:stats"
+                    ),
                 ],
                 [
-                    InlineKeyboardButton(text="🖥️ Панель сервера", callback_data="panel:server"),
-                    InlineKeyboardButton(text="👥 Онлайн", callback_data="panel:online"),
+                    InlineKeyboardButton(
+                        text="🖥️ Панель сервера", callback_data="panel:server"
+                    ),
+                    InlineKeyboardButton(
+                        text="👥 Онлайн", callback_data="panel:online"
+                    ),
                 ],
                 [
-                    InlineKeyboardButton(text="⌨️ Консоль", callback_data="panel:console"),
+                    InlineKeyboardButton(
+                        text="⌨️ Консоль", callback_data="panel:console"
+                    ),
                     InlineKeyboardButton(text="🔍 Поиск", callback_data="panel:search"),
                 ],
                 [
-                    InlineKeyboardButton(text="ℹ️ Информация", callback_data="panel:info"),
-                    InlineKeyboardButton(text="📣 Рассылка", callback_data="panel:broadcast"),
+                    InlineKeyboardButton(
+                        text="ℹ️ Информация", callback_data="panel:info"
+                    ),
+                    InlineKeyboardButton(
+                        text="📣 Рассылка", callback_data="panel:broadcast"
+                    ),
                 ],
                 [
-                    InlineKeyboardButton(text="В меню игрока", callback_data="panel:player_menu"),
+                    InlineKeyboardButton(
+                        text="В меню игрока", callback_data="panel:player_menu"
+                    ),
                 ],
             ]
         )
@@ -1125,8 +1363,17 @@ class ApplicationFlow:
             "muted": "#d7a7b8",
         }
 
-        draw.rounded_rectangle([s(18), s(18), s(width - 18), s(height - 18)], radius=s(26), fill=colors["panel"])
-        draw.text((s(42), s(34)), "Заявки за последние 14 дней", font=title_font, fill=colors["text"])
+        draw.rounded_rectangle(
+            [s(18), s(18), s(width - 18), s(height - 18)],
+            radius=s(26),
+            fill=colors["panel"],
+        )
+        draw.text(
+            (s(42), s(34)),
+            "Заявки за последние 14 дней",
+            font=title_font,
+            fill=colors["text"],
+        )
         # Subtitle removed per user request (previously: "Розовая сакура")
 
         for step in range(5):
@@ -1136,7 +1383,11 @@ class ApplicationFlow:
                 fill=colors["axis"] if step == 0 else colors["grid"],
                 width=s(2 if step == 0 else 1),
             )
-        draw.line([s(left), s(top), s(left), s(top + chart_height)], fill=colors["axis"], width=s(2))
+        draw.line(
+            [s(left), s(top), s(left), s(top + chart_height)],
+            fill=colors["axis"],
+            width=s(2),
+        )
 
         for index, (day, count) in enumerate(values):
             x = left + index * (bar_width + bar_gap)
@@ -1144,15 +1395,32 @@ class ApplicationFlow:
             y = top + chart_height - bar_height
             rect = [s(x), s(y), s(x + bar_width), s(top + chart_height)]
             draw.rounded_rectangle(rect, radius=s(10), fill=colors["bar"])
-            draw.rounded_rectangle([rect[0], rect[1], rect[2], min(rect[3], rect[1] + s(18))], radius=s(10), fill=colors["bar_top"])
+            draw.rounded_rectangle(
+                [rect[0], rect[1], rect[2], min(rect[3], rect[1] + s(18))],
+                radius=s(10),
+                fill=colors["bar_top"],
+            )
 
             count_text = str(count)
             count_box = draw.textbbox((0, 0), count_text, font=value_font)
-            draw.text((s(x + bar_width / 2) - (count_box[2] - count_box[0]) / 2, s(y - 30)), count_text, font=value_font, fill=colors["text"])
+            draw.text(
+                (s(x + bar_width / 2) - (count_box[2] - count_box[0]) / 2, s(y - 30)),
+                count_text,
+                font=value_font,
+                fill=colors["text"],
+            )
 
             label = day[5:]
             label_box = draw.textbbox((0, 0), label, font=label_font)
-            draw.text((s(x + bar_width / 2) - (label_box[2] - label_box[0]) / 2, s(height - 58)), label, font=label_font, fill=colors["muted"])
+            draw.text(
+                (
+                    s(x + bar_width / 2) - (label_box[2] - label_box[0]) / 2,
+                    s(height - 58),
+                ),
+                label,
+                font=label_font,
+                fill=colors["muted"],
+            )
 
         image = image.resize((width, height), Image.Resampling.LANCZOS)
         output = BytesIO()
@@ -1160,14 +1428,18 @@ class ApplicationFlow:
         return output.getvalue()
 
     @staticmethod
-    def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    def _load_font(
+        size: int, bold: bool = False
+    ) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
         bot_dir = Path(__file__).resolve().parent
         candidates: list[str] = []
 
         # Local fonts folder: prefer explicit Bold/Regular, then any TTF found there
         local_fonts = bot_dir / "fonts"
         if local_fonts.exists() and local_fonts.is_dir():
-            explicit = local_fonts / ("Comfortaa-Bold.ttf" if bold else "Comfortaa-Regular.ttf")
+            explicit = local_fonts / (
+                "Comfortaa-Bold.ttf" if bold else "Comfortaa-Regular.ttf"
+            )
             if explicit.exists():
                 candidates.append(str(explicit))
             # add any ttf in the fonts folder as fallback
@@ -1209,7 +1481,7 @@ class ApplicationFlow:
         for candidate in candidates:
             try:
                 return ImageFont.truetype(candidate, size)
-            except (OSError, IOError):
+            except OSError, IOError:
                 continue
 
         # As a last resort try to use a PIL bundled font by name (may fail on some installs)
@@ -1225,11 +1497,15 @@ class ApplicationFlow:
         is_admin_chat = callback.message.chat.id == self.config.admin_chat_id
         is_private = callback.message.chat.type == "private"
         if not is_admin_chat and not is_private:
-            await self._safe_answer(callback, Strings.ADMIN_ONLY_BUTTON, show_alert=True)
+            await self._safe_answer(
+                callback, Strings.ADMIN_ONLY_BUTTON, show_alert=True
+            )
             return False
         return True
 
-    async def _safe_answer(self, callback: CallbackQuery, text: str | None = None, show_alert: bool = False) -> None:
+    async def _safe_answer(
+        self, callback: CallbackQuery, text: str | None = None, show_alert: bool = False
+    ) -> None:
         try:
             await callback.answer(text, show_alert=show_alert)
         except TelegramBadRequest:
@@ -1257,7 +1533,9 @@ class ApplicationFlow:
 
 async def main() -> None:
     config = load_config()
-    store = ApplicationStore(config.db_path, config.db_backup_dir, config.db_backup_keep_last)
+    store = ApplicationStore(
+        config.db_path, config.db_backup_dir, config.db_backup_keep_last
+    )
     await store.init()
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode="HTML"))
