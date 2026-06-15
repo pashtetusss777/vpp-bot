@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import html
 import re
 import shutil
@@ -16,6 +16,7 @@ import yaml
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.enums import ChatMemberStatus
 from aiogram.filters import Command
 from aiogram.types import (
     BufferedInputFile,
@@ -55,6 +56,7 @@ class AppConfig:
     bot_token: str
     bot_username: str
     admin_chat_id: int
+    forum_chat_id: int
     admins: set[int]
     bridge: BridgeConfig
     db_path: str
@@ -132,6 +134,7 @@ def load_config() -> AppConfig:
         bot_token=str(raw["BOT_TOKEN"]),
         bot_username=str(raw.get("BOT_USERNAME", "")),
         admin_chat_id=int(raw["ADMIN_CHAT_ID"]),
+        forum_chat_id=int(raw["FORUM_CHAT_ID"]),
         admins={int(admin_id) for admin_id in raw.get("ADMINS", [])},
         bridge=BridgeConfig(
             base_url=str(bridge.get("BASE_URL", "http://127.0.0.1:8088")).rstrip("/"),
@@ -594,6 +597,18 @@ class ApplicationFlow:
             ),
         )
 
+    async def check_sub(self, callback: CallbackQuery, user_id: int) -> bool:
+        try:
+            check = (
+                await callback.bot.get_chat_member(
+                    chat_id=self.config.forum_chat_id, user_id=user_id
+                )
+            ).status not in [ChatMemberStatus.KICKED, ChatMemberStatus.LEFT]
+        except TelegramBadRequest:
+            check = False
+
+        return check
+
     async def handle_flow(self, callback: CallbackQuery) -> None:
         if callback.message.chat.type != "private":
             await self._safe_answer(
@@ -643,6 +658,15 @@ class ApplicationFlow:
                     show_alert=True,
                 )
                 return
+
+            if not await self.check_sub(callback, user_id):
+                await self._safe_answer(
+                    callback,
+                    "Вы не ознакомились с правилами",
+                    show_alert=True,
+                )
+                return
+
             self.sessions[user_id] = ApplicationSession()
             await self._safe_answer(callback)
             await self._safe_clear_reply_markup(callback.message)

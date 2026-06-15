@@ -10,3 +10,6 @@ paper-plugin/dependency-reduced-pom.xml
 paper-plugin/target/
 *.log
 python-bot.zip
+
+.ruff_cache
+backups/
