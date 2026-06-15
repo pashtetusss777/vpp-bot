@@ -6,15 +6,17 @@ import com.google.gson.JsonParseException;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
 import org.bukkit.OfflinePlayer;
+import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -43,6 +45,9 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
         try {
             server = HttpServer.create(new InetSocketAddress(host, port), 0);
             server.createContext(Strings.WHITELIST_ADD_ENDPOINT.get(), this::handleWhitelistAdd);
+            server.createContext(Strings.SERVER_STATUS_ENDPOINT.get(), this::handleServerStatus);
+            server.createContext(Strings.SERVER_ONLINE_ENDPOINT.get(), this::handleServerOnline);
+            server.createContext(Strings.PLAYER_INFO_ENDPOINT.get(), this::handlePlayerInfo);
             if (getConfig().getBoolean("console.enabled", false)) {
                 server.createContext(Strings.CONSOLE_EXEC_ENDPOINT.get(), this::handleConsoleExec);
             }
@@ -62,8 +67,7 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
             return;
         }
 
-        String authorization = exchange.getRequestHeaders().getFirst("Authorization");
-        if (!("Bearer " + token).equals(authorization)) {
+        if (!isAuthorized(exchange)) {
             sendJson(exchange, 401, Strings.ERROR_UNAUTHORIZED.get());
             return;
         }
@@ -105,7 +109,10 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
             console("Executed console command: " + command + " => " + (ok ? "ok" : "failed"));
         });
 
-        sendJson(exchange, 200, Strings.STATUS_OK.get());
+        JsonObject response = new JsonObject();
+        response.addProperty("status", "queued");
+        response.addProperty("command", command);
+        sendJson(exchange, 200, gson.toJson(response));
     }
 
     @Override
@@ -125,8 +132,7 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
             return;
         }
 
-        String authorization = exchange.getRequestHeaders().getFirst("Authorization");
-        if (!("Bearer " + token).equals(authorization)) {
+        if (!isAuthorized(exchange)) {
             sendJson(exchange, 401, Strings.ERROR_UNAUTHORIZED.get());
             return;
         }
@@ -154,6 +160,102 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
         sendJson(exchange, 200, Strings.STATUS_OK.get());
     }
 
+    private void handleServerStatus(HttpExchange exchange) throws IOException {
+        if (!exchange.getRequestMethod().equalsIgnoreCase("GET")) {
+            sendJson(exchange, 405, Strings.ERROR_METHOD_NOT_ALLOWED.get());
+            return;
+        }
+
+        if (!isAuthorized(exchange)) {
+            sendJson(exchange, 401, Strings.ERROR_UNAUTHORIZED.get());
+            return;
+        }
+
+        JsonObject response = new JsonObject();
+        response.addProperty("status", "ok");
+        response.addProperty("name", Bukkit.getName());
+        response.addProperty("version", Bukkit.getVersion());
+        response.addProperty("bukkit_version", Bukkit.getBukkitVersion());
+        response.addProperty("online", Bukkit.getOnlinePlayers().size());
+        response.addProperty("max_players", Bukkit.getMaxPlayers());
+        response.addProperty("whitelist", Bukkit.hasWhitelist());
+        response.addProperty("console_enabled", getConfig().getBoolean("console.enabled", false));
+        sendJson(exchange, 200, gson.toJson(response));
+    }
+
+    private void handleServerOnline(HttpExchange exchange) throws IOException {
+        if (!exchange.getRequestMethod().equalsIgnoreCase("GET")) {
+            sendJson(exchange, 405, Strings.ERROR_METHOD_NOT_ALLOWED.get());
+            return;
+        }
+
+        if (!isAuthorized(exchange)) {
+            sendJson(exchange, 401, Strings.ERROR_UNAUTHORIZED.get());
+            return;
+        }
+
+        JsonObject response = new JsonObject();
+        List<String> players = new ArrayList<>();
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            players.add(player.getName());
+        }
+        response.addProperty("status", "ok");
+        response.addProperty("online", players.size());
+        response.addProperty("max_players", Bukkit.getMaxPlayers());
+        response.add("players", gson.toJsonTree(players));
+        sendJson(exchange, 200, gson.toJson(response));
+    }
+
+    private void handlePlayerInfo(HttpExchange exchange) throws IOException {
+        if (!exchange.getRequestMethod().equalsIgnoreCase("GET")) {
+            sendJson(exchange, 405, Strings.ERROR_METHOD_NOT_ALLOWED.get());
+            return;
+        }
+
+        if (!isAuthorized(exchange)) {
+            sendJson(exchange, 401, Strings.ERROR_UNAUTHORIZED.get());
+            return;
+        }
+
+        String nickname = getQueryParam(exchange, "name");
+        if (nickname == null || !NICKNAME_PATTERN.matcher(nickname).matches()) {
+            sendJson(exchange, 422, Strings.ERROR_INVALID_NICKNAME.get());
+            return;
+        }
+
+        Player player = Bukkit.getPlayerExact(nickname);
+        JsonObject response = new JsonObject();
+        response.addProperty("status", "ok");
+        response.addProperty("name", nickname);
+        response.addProperty("online", player != null);
+        if (player != null && player.getAddress() != null) {
+            InetSocketAddress address = player.getAddress();
+            response.addProperty("ip", address.getAddress().getHostAddress());
+            response.addProperty("port", address.getPort());
+        }
+        sendJson(exchange, 200, gson.toJson(response));
+    }
+
+    private String getQueryParam(HttpExchange exchange, String name) {
+        String query = exchange.getRequestURI().getRawQuery();
+        if (query == null || query.isBlank()) {
+            return null;
+        }
+        for (String part : query.split("&")) {
+            String[] pair = part.split("=", 2);
+            String key = URLDecoder.decode(pair[0], StandardCharsets.UTF_8);
+            if (key.equals(name)) {
+                return pair.length > 1 ? URLDecoder.decode(pair[1], StandardCharsets.UTF_8) : "";
+            }
+        }
+        return null;
+    }
+
+    private boolean isAuthorized(HttpExchange exchange) {
+        String authorization = exchange.getRequestHeaders().getFirst("Authorization");
+        return ("Bearer " + token).equals(authorization);
+    }
+
     private void sendJson(HttpExchange exchange, int status, String body) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
@@ -164,6 +266,6 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
     }
 
     private void console(String message) {
-        Bukkit.getConsoleSender().sendMessage(Strings.PREFIX.get() + message);
+        getLogger().info(message);
     }
 }

@@ -1,6 +1,10 @@
 package org.bukkit;
 
+import org.bukkit.entity.Player;
 import org.bukkit.plugin.PluginManager;
+
+import java.util.Collection;
+import java.util.List;
 
 public final class Bukkit {
     private static final PluginManager PLUGIN_MANAGER = new PluginManager();
@@ -24,5 +28,33 @@ public final class Bukkit {
 
     public static OfflinePlayer getOfflinePlayer(String name) {
         return new OfflinePlayer(name);
+    }
+
+    public static String getName() {
+        return "TestServer";
+    }
+
+    public static String getVersion() {
+        return "Test Version";
+    }
+
+    public static String getBukkitVersion() {
+        return "1.21.3-R0.1-SNAPSHOT";
+    }
+
+    public static Collection<? extends Player> getOnlinePlayers() {
+        return List.of(new Player("Steve"));
+    }
+
+    public static Player getPlayerExact(String name) {
+        return new Player(name);
+    }
+
+    public static int getMaxPlayers() {
+        return 20;
+    }
+
+    public static boolean hasWhitelist() {
+        return true;
     }
 }

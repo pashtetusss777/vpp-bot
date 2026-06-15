@@ -1,6 +1,12 @@
 python-bot/.venv/
+python-bot/__pycache__/
 python-bot/config.yml
 python-bot/*.db
+python-bot/data/
 python-bot/applications-stats-preview.png
+python-bot/debug-*.txt
+python-bot/test-*.png
+paper-plugin/dependency-reduced-pom.xml
 paper-plugin/target/
 *.log
+python-bot.zip
