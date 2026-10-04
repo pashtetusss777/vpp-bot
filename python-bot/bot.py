@@ -29,7 +29,7 @@ from aiogram.types import (
     Message,
 )
 from PIL import Image, ImageDraw, ImageFont
-from strings import Strings
+from strings import Icons, Strings
 
 
 NICKNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,16}$")
@@ -101,6 +101,40 @@ class ApplicationSession:
     answers: list[str] = field(default_factory=list)
 
 
+@dataclass
+class Report:
+    id: int
+    telegram_id: int
+    username: str | None
+    nickname: str
+    offender: str
+    body: str
+    media_type: str
+    file_id: str
+    status: str
+    created_at: str
+    admin_message_id: int | None = None
+    taken_by_name: str | None = None
+    resolved_by_name: str | None = None
+    question: str | None = None
+    answer: str | None = None
+
+
+@dataclass
+class ReportDraft:
+    nickname: str
+    step: str
+    offender: str | None = None
+    body: str | None = None
+
+
+@dataclass
+class ReportQuestionSession:
+    report_id: int
+    message_chat_id: int
+    prompt_message_id: int | None = None
+
+
 @dataclass(frozen=True)
 class RejectionSession:
     application_id: int
@@ -108,6 +142,7 @@ class RejectionSession:
     nickname: str
     message_chat_id: int
     message_id: int
+    prompt_message_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -221,6 +256,29 @@ class ApplicationStore:
             )
             await self._ensure_column(db, "applications", "decided_by_name", "TEXT")
             await self._ensure_column(db, "applications", "decision_reason", "TEXT")
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS reports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_id INTEGER NOT NULL,
+                    username TEXT,
+                    nickname TEXT NOT NULL,
+                    offender TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    media_type TEXT NOT NULL,
+                    file_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'new',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    admin_message_id INTEGER,
+                    taken_by INTEGER,
+                    taken_by_name TEXT,
+                    resolved_by INTEGER,
+                    resolved_by_name TEXT,
+                    question TEXT,
+                    answer TEXT
+                )
+                """
+            )
             await db.commit()
         self._backup_now("init")
 
@@ -285,6 +343,141 @@ class ApplicationStore:
         )
         row = await cursor.fetchone()
         return str(row[0]) if row else None
+
+    async def get_latest_nickname(self, telegram_id: int) -> str | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                SELECT nickname FROM applications
+                WHERE telegram_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (telegram_id,),
+            )
+            row = await cursor.fetchone()
+            return str(row[0]) if row else None
+
+    async def create_report(
+        self,
+        telegram_id: int,
+        username: str | None,
+        nickname: str,
+        offender: str,
+        body: str,
+        media_type: str,
+        file_id: str,
+    ) -> int:
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                INSERT INTO reports (
+                    telegram_id, username, nickname, offender, body, media_type, file_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (telegram_id, username, nickname, offender, body, media_type, file_id),
+            )
+            await db.commit()
+            report_id = int(cursor.lastrowid)
+        self._backup_now("report")
+        return report_id
+
+    async def get_report(self, report_id: int) -> Report | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                SELECT id, telegram_id, username, nickname, offender, body, media_type,
+                       file_id, status, created_at, admin_message_id, taken_by_name,
+                       resolved_by_name, question, answer
+                FROM reports
+                WHERE id = ?
+                """,
+                (report_id,),
+            )
+            row = await cursor.fetchone()
+            return self._report_from_row(row) if row else None
+
+    async def set_report_message(self, report_id: int, message_id: int) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE reports SET admin_message_id = ? WHERE id = ?",
+                (message_id, report_id),
+            )
+            await db.commit()
+
+    async def take_report(self, report_id: int, admin_id: int, admin_name: str) -> bool:
+        return await self._update_report(
+            report_id,
+            "status = 'in_progress', taken_by = ?, taken_by_name = ?",
+            (admin_id, admin_name),
+            "status = 'new'",
+        )
+
+    async def resolve_report(
+        self, report_id: int, admin_id: int, admin_name: str
+    ) -> bool:
+        return await self._update_report(
+            report_id,
+            "status = 'resolved', resolved_by = ?, resolved_by_name = ?",
+            (admin_id, admin_name),
+            "status != 'resolved'",
+        )
+
+    async def ask_report(self, report_id: int, question: str) -> bool:
+        return await self._update_report(
+            report_id,
+            "status = 'question', question = ?, answer = NULL",
+            (question,),
+            "status != 'resolved'",
+        )
+
+    async def answer_report(self, report_id: int, answer: str) -> bool:
+        return await self._update_report(
+            report_id,
+            "status = 'in_progress', answer = ?",
+            (answer,),
+            "status = 'question'",
+        )
+
+    async def _update_report(
+        self,
+        report_id: int,
+        assignment: str,
+        params: tuple[Any, ...],
+        condition: str,
+    ) -> bool:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                f"UPDATE reports SET {assignment} WHERE id = ? AND {condition}",
+                (*params, report_id),
+            )
+            await db.commit()
+            updated = cursor.rowcount == 1
+        if updated:
+            self._backup_now("report")
+        return updated
+
+    @staticmethod
+    def _report_from_row(row: tuple[Any, ...]) -> Report:
+        return Report(
+            id=int(row[0]),
+            telegram_id=int(row[1]),
+            username=str(row[2]) if row[2] is not None else None,
+            nickname=str(row[3]),
+            offender=str(row[4]),
+            body=str(row[5]),
+            media_type=str(row[6]),
+            file_id=str(row[7]),
+            status=str(row[8]),
+            created_at=str(row[9]),
+            admin_message_id=int(row[10]) if row[10] is not None else None,
+            taken_by_name=str(row[11]) if row[11] is not None else None,
+            resolved_by_name=str(row[12]) if row[12] is not None else None,
+            question=str(row[13]) if row[13] is not None else None,
+            answer=str(row[14]) if row[14] is not None else None,
+        )
 
     async def get_pending(self, application_id: int) -> tuple[int, str] | None:
         async with aiosqlite.connect(self.db_path) as db:
@@ -604,6 +797,9 @@ class ApplicationFlow:
         self.console_sessions: set[int] = set()
         self.reject_sessions: dict[int, RejectionSession] = {}
         self.broadcast_sessions: dict[int, BroadcastSession] = {}
+        self.report_drafts: dict[int, ReportDraft] = {}
+        self.report_replies: dict[int, int] = {}
+        self.report_questions: dict[int, ReportQuestionSession] = {}
         self._user_locks: dict[int, asyncio.Lock] = {}
         self._register_handlers()
 
@@ -611,7 +807,8 @@ class ApplicationFlow:
         return self._user_locks.setdefault(user_id, asyncio.Lock())
 
     def _register_handlers(self) -> None:
-        self.router.message(Command("start", "panel"))(self.start)
+        self.router.message(Command("start"))(self.start)
+        self.router.message(Command("admins"))(self.open_admin_panel)
         self.router.message(F.chat.id == self.config.admin_chat_id)(
             self.handle_admin_message
         )
@@ -622,52 +819,51 @@ class ApplicationFlow:
             self.handle_player_action
         )
         self.router.callback_query(F.data.startswith("panel:"))(self.handle_admin_panel)
+        self.router.callback_query(F.data.startswith("report:"))(self.handle_report_action)
 
     @_user_locked
     async def start(self, message: Message) -> None:
         if message.chat.type != "private":
-            if message.chat.id == self.config.admin_chat_id and self._is_admin(
-                message.from_user.id
-            ):
-                await message.answer(
-                    Strings.ADMIN_PANEL, reply_markup=self._admin_panel_keyboard()
-                )
-            return
-
-        if self._is_admin(message.from_user.id):
-            await self._send_player_status(message, message.from_user.id)
-            await message.answer(
-                Strings.ADMIN_PANEL, reply_markup=self._admin_panel_keyboard()
-            )
             return
 
         await self._send_player_menu(message, message.from_user.id)
 
-    async def _send_player_status(self, message: Message, user_id: int) -> bool:
-        latest_status = await self.store.get_gate_status(user_id)
-        status_message = self._status_message(latest_status)
-        if status_message:
-            await message.answer(status_message)
-            return True
+    @_user_locked
+    async def open_admin_panel(self, message: Message) -> None:
+        if not self._is_admin(message.from_user.id):
+            if message.chat.type == "private":
+                await message.answer(Strings.NO_ACCESS)
+            return
+        if (
+            message.chat.type != "private"
+            and message.chat.id != self.config.admin_chat_id
+        ):
+            return
 
-        return False
+        await message.answer(
+            Strings.ADMIN_PANEL, reply_markup=self._admin_panel_keyboard()
+        )
 
     async def _send_player_menu(self, message: Message, user_id: int) -> None:
-        if await self._send_player_status(message, user_id):
+        status = await self.store.get_gate_status(user_id)
+        if status == "banned":
+            await message.answer(self.config.messages.application_banned)
             return
+
+        nickname = await self.store.get_latest_nickname(user_id)
+        status_message = self._status_message(status)
+        if status_message:
+            await message.answer(status_message)
+            if nickname:
+                await message.answer(
+                    Strings.REPORT_HINT,
+                    reply_markup=self._report_start_keyboard(),
+                )
+            return
+
         await message.answer(
             self.config.messages.form_start,
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text=Strings.BUTTON_START,
-                            callback_data="flow:start",
-                            style="primary",
-                        )
-                    ]
-                ]
-            ),
+            reply_markup=self._player_start_keyboard(bool(nickname)),
         )
 
     async def check_sub(self, callback: CallbackQuery, user_id: int) -> bool:
@@ -692,6 +888,16 @@ class ApplicationFlow:
 
         action = callback.data.split(":", maxsplit=1)[1]
         user_id = callback.from_user.id
+        if action == "report_cancel":
+            self.report_drafts.pop(user_id, None)
+            await self._safe_clear_reply_markup(callback.message)
+            await self._safe_answer(callback)
+            await callback.message.answer(Strings.REPORT_CANCELLED)
+            return
+        if action == "report":
+            await self._begin_report(callback)
+            return
+
         latest_status = await self.store.get_gate_status(user_id)
         status_message = self._status_message(latest_status)
         if status_message:
@@ -718,6 +924,7 @@ class ApplicationFlow:
                             InlineKeyboardButton(
                                 text="Я ознакомлен",
                                 callback_data="flow:agree",
+                                icon_custom_emoji_id=Icons.ACCEPT,
                                 style="success",
                             )
                         ]
@@ -743,6 +950,7 @@ class ApplicationFlow:
                 )
                 return
 
+            self.report_drafts.pop(user_id, None)
             self.sessions[user_id] = ApplicationSession()
             await self._safe_answer(callback)
             await self._safe_clear_reply_markup(callback.message)
@@ -751,6 +959,12 @@ class ApplicationFlow:
     @_user_locked
     async def answer_question(self, message: Message, bot: Bot) -> None:
         user_id = message.from_user.id
+        if user_id in self.report_replies:
+            await self._handle_report_reply(message, bot)
+            return
+        if user_id in self.report_drafts:
+            await self._handle_report_draft(message, bot)
+            return
         if await self._handle_admin_message(message, bot):
             return
         if user_id not in self.sessions:
@@ -827,6 +1041,270 @@ class ApplicationFlow:
         )
         await message.answer(self.config.messages.form_complete)
 
+    async def _begin_report(self, callback: CallbackQuery) -> None:
+        user_id = callback.from_user.id
+        if await self.store.get_gate_status(user_id) == "banned":
+            await self._safe_answer(
+                callback, self.config.messages.application_banned, show_alert=True
+            )
+            return
+        nickname = await self.store.get_latest_nickname(user_id)
+        if not nickname:
+            await self._safe_answer(callback, Strings.REPORT_NO_NICKNAME, show_alert=True)
+            return
+        self.sessions.pop(user_id, None)
+        self.report_drafts[user_id] = ReportDraft(nickname=nickname, step="offender")
+        await self._safe_answer(callback)
+        await callback.message.answer(
+            f"Ваш ник: <code>{html.escape(nickname)}</code>\n{Strings.REPORT_ASK_OFFENDER}",
+            reply_markup=self._report_cancel_keyboard(),
+        )
+
+    async def _handle_report_draft(self, message: Message, bot: Bot) -> None:
+        draft = self.report_drafts[message.from_user.id]
+        text = (message.text or "").strip()
+        if text.lower() in {"/cancel", "cancel", "отмена"}:
+            self.report_drafts.pop(message.from_user.id, None)
+            await message.answer(Strings.REPORT_CANCELLED)
+            return
+
+        if draft.step == "offender":
+            if not NICKNAME_RE.fullmatch(text):
+                await message.answer(
+                    Strings.INVALID_NICKNAME,
+                    reply_markup=self._report_cancel_keyboard(),
+                )
+                return
+            draft.offender = text
+            draft.step = "body"
+            await message.answer(
+                Strings.REPORT_ASK_BODY, reply_markup=self._report_cancel_keyboard()
+            )
+            return
+
+        if draft.step == "body":
+            if not text or self._incoming_media(message) is not None:
+                await message.answer(
+                    Strings.REPORT_NEED_TEXT,
+                    reply_markup=self._report_cancel_keyboard(),
+                )
+                return
+            if len(text) > 2000:
+                await message.answer(
+                    "Слишком длинный текст. Уложитесь в 2000 символов.",
+                    reply_markup=self._report_cancel_keyboard(),
+                )
+                return
+            draft.body = text
+            draft.step = "media"
+            await message.answer(
+                Strings.REPORT_ASK_MEDIA, reply_markup=self._report_cancel_keyboard()
+            )
+            return
+
+        media = self._incoming_media(message)
+        if media is None or draft.offender is None or draft.body is None:
+            await message.answer(
+                Strings.REPORT_NEED_MEDIA, reply_markup=self._report_cancel_keyboard()
+            )
+            return
+
+        media_type, file_id = media
+        self.report_drafts.pop(message.from_user.id, None)
+        report_id = await self.store.create_report(
+            telegram_id=message.from_user.id,
+            username=message.from_user.username,
+            nickname=draft.nickname,
+            offender=draft.offender,
+            body=draft.body,
+            media_type=media_type,
+            file_id=file_id,
+        )
+        report = await self.store.get_report(report_id)
+        if report is None:
+            await message.answer(Strings.REPORT_SENT)
+            return
+        sent = await bot.send_message(
+            self.config.admin_chat_id,
+            self._format_report(report),
+            reply_markup=self._report_keyboard(report),
+        )
+        await self.store.set_report_message(report_id, sent.message_id)
+        await self._send_media(bot, self.config.admin_chat_id, media_type, file_id)
+        await message.answer(Strings.REPORT_SENT)
+
+    async def _handle_report_reply(self, message: Message, bot: Bot) -> None:
+        report_id = self.report_replies[message.from_user.id]
+        report = await self.store.get_report(report_id)
+        if report is None or report.status != "question":
+            self.report_replies.pop(message.from_user.id, None)
+            await message.answer(Strings.REPORT_ALREADY_CLOSED)
+            return
+
+        media = self._incoming_media(message)
+        text = (message.text or message.caption or "").strip()
+        if not text and media is None:
+            await message.answer("Ответьте текстом или прикрепите фото, видео или документ.")
+            return
+        answer = text or self._media_label(media[0] if media else "")
+        if media and text:
+            answer = f"{text}\n{self._media_label(media[0])}"
+        if not await self.store.answer_report(report_id, answer):
+            self.report_replies.pop(message.from_user.id, None)
+            await message.answer(Strings.REPORT_ALREADY_CLOSED)
+            return
+
+        self.report_replies.pop(message.from_user.id, None)
+        updated = await self.store.get_report(report_id)
+        await bot.send_message(
+            self.config.admin_chat_id,
+            f"Ответ по жалобе #{report_id} от <code>{html.escape(report.nickname)}</code>:\n"
+            f"{html.escape(answer)}",
+        )
+        if media is not None:
+            await self._send_media(
+                bot, self.config.admin_chat_id, media[0], media[1]
+            )
+        if updated is not None:
+            await self._refresh_report_message(bot, updated)
+        await message.answer(Strings.REPORT_ANSWER_SAVED)
+
+    async def _handle_report_question_message(self, message: Message, bot: Bot) -> None:
+        session = self.report_questions[message.from_user.id]
+        question = (message.text or "").strip()
+        if question.lower() in {"/cancel", "cancel", "отмена"}:
+            self.report_questions.pop(message.from_user.id, None)
+            await self._clear_report_question_prompt(bot, session)
+            await message.answer("Вопрос отменён.")
+            return
+        if not question or self._incoming_media(message) is not None:
+            await message.answer(
+                Strings.REPORT_QUESTION_ASK,
+                reply_markup=self._report_ask_cancel_keyboard(session.report_id),
+            )
+            return
+
+        report = await self.store.get_report(session.report_id)
+        if report is None or not await self.store.ask_report(session.report_id, question):
+            self.report_questions.pop(message.from_user.id, None)
+            await self._clear_report_question_prompt(bot, session)
+            await message.answer(Strings.REPORT_ALREADY_CLOSED)
+            return
+
+        self.report_questions.pop(message.from_user.id, None)
+        await self._clear_report_question_prompt(bot, session)
+        self.report_replies[report.telegram_id] = report.id
+        notified = await self._notify_player(
+            bot,
+            report.telegram_id,
+            f"Администратор задал вопрос по жалобе #{report.id}:\n\n"
+            f"{html.escape(question)}\n\n"
+            "Ответьте одним сообщением: текстом, фото, видео или документом.",
+        )
+        updated = await self.store.get_report(report.id)
+        if updated is not None:
+            await self._refresh_report_message(bot, updated)
+        notice = Strings.REPORT_QUESTION_SENT
+        if not notified:
+            notice += f"\n{Strings.PLAYER_NOTIFY_FAILED}"
+        await message.answer(notice)
+
+    @_user_locked
+    async def handle_report_action(self, callback: CallbackQuery, bot: Bot) -> None:
+        if not await self._allow_admin_callback(callback):
+            return
+        parts = (callback.data or "").split(":")
+        if len(parts) != 3 or not parts[2].isdigit():
+            await self._safe_answer(callback, "Жалоба не найдена.", show_alert=True)
+            return
+        _, action, raw_report_id = parts
+        report_id = int(raw_report_id)
+        admin_name = self._admin_display_name(callback.from_user)
+
+        if action == "ask_cancel":
+            session = self.report_questions.get(callback.from_user.id)
+            if session is None or session.report_id != report_id:
+                await self._safe_clear_reply_markup(callback.message)
+                await self._safe_answer(callback, "Вопрос уже отменён.", show_alert=True)
+                return
+            self.report_questions.pop(callback.from_user.id, None)
+            await self._safe_clear_reply_markup(callback.message)
+            await self._safe_answer(callback)
+            await callback.message.answer("Вопрос отменён.")
+            return
+
+        report = await self.store.get_report(report_id)
+        if report is None:
+            await self._safe_answer(callback, "Жалоба не найдена.", show_alert=True)
+            return
+
+        if action == "take":
+            if not await self.store.take_report(
+                report_id, callback.from_user.id, admin_name
+            ):
+                await self._safe_answer(
+                    callback, "Жалоба уже в работе или закрыта.", show_alert=True
+                )
+                fresh = await self.store.get_report(report_id)
+                if fresh is not None:
+                    await self._refresh_report_message(bot, fresh)
+                return
+            fresh = await self.store.get_report(report_id)
+            if fresh is not None:
+                await self._refresh_report_message(bot, fresh)
+            notified = await self._notify_player(
+                bot,
+                report.telegram_id,
+                f"Жалобу #{report.id} на <code>{html.escape(report.offender)}</code> взяли в работу.",
+            )
+            await self._safe_answer(callback, Strings.REPORT_TAKEN)
+            if not notified:
+                await callback.message.answer(Strings.PLAYER_NOTIFY_FAILED)
+            return
+
+        if action == "resolve":
+            if not await self.store.resolve_report(
+                report_id, callback.from_user.id, admin_name
+            ):
+                await self._safe_answer(
+                    callback, Strings.REPORT_ALREADY_CLOSED, show_alert=True
+                )
+                return
+            self.report_replies.pop(report.telegram_id, None)
+            fresh = await self.store.get_report(report_id)
+            if fresh is not None:
+                await self._refresh_report_message(bot, fresh)
+            notified = await self._notify_player(
+                bot,
+                report.telegram_id,
+                f"Жалоба #{report.id} на <code>{html.escape(report.offender)}</code> отмечена решённой.",
+            )
+            await self._safe_answer(callback, Strings.REPORT_RESOLVED)
+            if not notified:
+                await callback.message.answer(Strings.PLAYER_NOTIFY_FAILED)
+            return
+
+        if action == "ask":
+            if report.status == "resolved":
+                await self._safe_answer(
+                    callback, Strings.REPORT_ALREADY_CLOSED, show_alert=True
+                )
+                return
+            await self._safe_answer(callback)
+            prompt = await callback.message.answer(
+                f"Вопрос по жалобе #{report.id} (<code>{html.escape(report.nickname)}</code>).\n"
+                f"{Strings.REPORT_QUESTION_ASK}",
+                reply_markup=self._report_ask_cancel_keyboard(report.id),
+            )
+            self.report_questions[callback.from_user.id] = ReportQuestionSession(
+                report_id=report.id,
+                message_chat_id=callback.message.chat.id,
+                prompt_message_id=prompt.message_id,
+            )
+            return
+
+        await self._safe_answer(callback)
+
     @_user_locked
     async def handle_admin_action(self, callback: CallbackQuery, bot: Bot) -> None:
         if not await self._allow_admin_callback(callback):
@@ -840,6 +1318,20 @@ class ApplicationFlow:
             return
         _, action, raw_application_id = parts
         application_id = int(raw_application_id)
+
+        if action == "reject_cancel":
+            session = self.reject_sessions.get(callback.from_user.id)
+            if session is None or session.application_id != application_id:
+                await self._safe_clear_reply_markup(callback.message)
+                await self._safe_answer(
+                    callback, "Отклонение уже отменено.", show_alert=True
+                )
+                return
+            self.reject_sessions.pop(callback.from_user.id, None)
+            await self._safe_clear_reply_markup(callback.message)
+            await self._safe_answer(callback)
+            await callback.message.answer("Отклонение заявки отменено.")
+            return
 
         if action == "view":
             application = await self.store.get_by_id(application_id)
@@ -929,17 +1421,19 @@ class ApplicationFlow:
             return
 
         if action == "reject":
+            await self._safe_answer(callback)
+            prompt = await callback.message.answer(
+                f"Укажите причину отклонения заявки #{application_id} (<code>{html.escape(nickname)}</code>).\n"
+                "Отправьте текст одним сообщением.",
+                reply_markup=self._reject_cancel_keyboard(application_id),
+            )
             self.reject_sessions[admin_id] = RejectionSession(
                 application_id=application_id,
                 telegram_id=telegram_id,
                 nickname=nickname,
                 message_chat_id=callback.message.chat.id,
                 message_id=callback.message.message_id,
-            )
-            await self._safe_answer(callback)
-            await callback.message.answer(
-                f"Укажите причину отклонения заявки #{application_id} (<code>{html.escape(nickname)}</code>).\n"
-                "Отправьте текст одним сообщением или <code>/cancel</code> для отмены."
+                prompt_message_id=prompt.message_id,
             )
             return
 
@@ -1078,13 +1572,18 @@ class ApplicationFlow:
                 "Отмена: <code>/cancel</code>"
             )
             return
+        if section == "console_cancel":
+            self.console_sessions.discard(callback.from_user.id)
+            await self._safe_clear_reply_markup(callback.message)
+            await callback.message.answer("Режим консоли выключен.")
+            return
         if section == "console":
             self.console_sessions.add(callback.from_user.id)
             await callback.message.answer(
                 "<b>Консоль сервера</b>\n"
                 "Отправляйте команды сообщениями. Можно с <code>/</code> или без него.\n"
-                "Пример: <code>say Привет всем</code>\n\n"
-                "Чтобы выйти из режима консоли: <code>/cancel</code>"
+                "Пример: <code>say Привет всем</code>",
+                reply_markup=self._console_keyboard(),
             )
             return
         if section == "player_menu":
@@ -1098,6 +1597,9 @@ class ApplicationFlow:
         if not self._is_admin(message.from_user.id):
             return False
         message_text = message.text or ""
+        if message.from_user.id in self.report_questions:
+            await self._handle_report_question_message(message, bot)
+            return True
         if message.from_user.id in self.broadcast_sessions:
             text = (message.text or message.caption or "").strip()
             if text.lower() in {"/cancel", "cancel", "отмена"}:
@@ -1125,11 +1627,15 @@ class ApplicationFlow:
             reason = (message.text or message.caption or "").strip()
             if reason.lower() in {"/cancel", "cancel", "отмена"}:
                 self.reject_sessions.pop(message.from_user.id, None)
+                await self._clear_reject_prompt(bot, reject_session)
                 await message.answer("Отклонение заявки отменено.")
                 return True
             if not reason:
                 await message.answer(
-                    "Причина не может быть пустой. Отправьте текст причины или <code>/cancel</code>."
+                    "Причина не может быть пустой. Отправьте текст причины.",
+                    reply_markup=self._reject_cancel_keyboard(
+                        reject_session.application_id
+                    ),
                 )
                 return True
 
@@ -1139,11 +1645,13 @@ class ApplicationFlow:
                 reject_session.application_id, "rejected", admin_id, admin_name, reason
             ):
                 self.reject_sessions.pop(message.from_user.id, None)
+                await self._clear_reject_prompt(bot, reject_session)
                 await message.answer(Strings.APPLICATION_ALREADY_PROCESSED)
                 return True
 
             self.sessions.pop(reject_session.telegram_id, None)
             self.reject_sessions.pop(message.from_user.id, None)
+            await self._clear_reject_prompt(bot, reject_session)
             notified = await self._notify_player(
                 bot,
                 reject_session.telegram_id,
@@ -1179,19 +1687,22 @@ class ApplicationFlow:
             if command.startswith("/"):
                 command = command[1:].lstrip()
             if not command:
-                await message.answer(Strings.EMPTY_COMMAND)
+                await message.answer(
+                    Strings.EMPTY_COMMAND, reply_markup=self._console_keyboard()
+                )
                 return True
             try:
                 result = await self.bridge.exec_command(command)
                 await message.answer(
                     "Команда отправлена в консоль.\n"
-                    f"<code>{html.escape(result)}</code>\n\n"
-                    "Следующая команда или <code>/cancel</code> для выхода."
+                    f"<code>{html.escape(result)}</code>",
+                    reply_markup=self._console_keyboard(),
                 )
             except Exception as exc:
                 await message.answer(
                     f"Ошибка при отправке команды: <code>{html.escape(str(exc))}</code>\n\n"
-                    "Режим консоли остается включенным. <code>/cancel</code> для выхода."
+                    "Режим консоли остается включенным.",
+                    reply_markup=self._console_keyboard(),
                 )
             return True
         if message_text.startswith("/"):
@@ -1219,6 +1730,7 @@ class ApplicationFlow:
                     InlineKeyboardButton(
                         text=f"Открыть #{application.id}",
                         callback_data=f"app:view:{application.id}",
+                        icon_custom_emoji_id=Icons.OPEN,
                         style="primary",
                     )
                 ]
@@ -1249,6 +1761,7 @@ class ApplicationFlow:
                     InlineKeyboardButton(
                         text=f"Открыть #{application.id}",
                         callback_data=f"app:view:{application.id}",
+                        icon_custom_emoji_id=Icons.OPEN,
                         style="primary",
                     )
                 ]
@@ -1323,6 +1836,7 @@ class ApplicationFlow:
                 InlineKeyboardButton(
                     text=str(player),
                     callback_data=f"player:menu:{player}",
+                    icon_custom_emoji_id=Icons.PLAYER,
                     style="primary",
                 )
             ]
@@ -1391,16 +1905,19 @@ class ApplicationFlow:
                     InlineKeyboardButton(
                         text="Принять",
                         callback_data=f"app:approve:{application_id}",
+                        icon_custom_emoji_id=Icons.ACCEPT,
                         style="success",
                     ),
                     InlineKeyboardButton(
                         text="Отклонить",
                         callback_data=f"app:reject:{application_id}",
+                        icon_custom_emoji_id=Icons.REJECT,
                         style="danger",
                     ),
                     InlineKeyboardButton(
                         text="Бан",
                         callback_data=f"app:ban:{application_id}",
+                        icon_custom_emoji_id=Icons.BAN,
                         style="danger",
                     ),
                 ]
@@ -1413,8 +1930,9 @@ class ApplicationFlow:
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="♻️ Разбанить",
+                        text="Разбанить",
                         callback_data=f"app:unban:{application_id}",
+                        icon_custom_emoji_id=Icons.UNBAN,
                         style="success",
                     )
                 ]
@@ -1427,15 +1945,256 @@ class ApplicationFlow:
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="ℹ️ Инфо",
+                        text="Инфо",
                         callback_data=f"player:info:{nickname}",
+                        icon_custom_emoji_id=Icons.INFO,
                         style="primary",
                     ),
                     InlineKeyboardButton(
-                        text="👢 Кик",
+                        text="Кик",
                         callback_data=f"player:kick:{nickname}",
+                        icon_custom_emoji_id=Icons.KICK,
                         style="danger",
                     ),
+                ]
+            ]
+        )
+
+    async def _clear_reject_prompt(self, bot: Bot, session: RejectionSession) -> None:
+        if session.prompt_message_id is None:
+            return
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=session.message_chat_id,
+                message_id=session.prompt_message_id,
+                reply_markup=None,
+            )
+        except TelegramBadRequest:
+            pass
+
+    @staticmethod
+    def _reject_cancel_keyboard(application_id: int) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="Отмена",
+                        callback_data=f"app:reject_cancel:{application_id}",
+                        icon_custom_emoji_id=Icons.REJECT,
+                        style="danger",
+                    )
+                ]
+            ]
+        )
+
+    @staticmethod
+    def _player_start_keyboard(can_report: bool) -> InlineKeyboardMarkup:
+        rows = [
+            [
+                InlineKeyboardButton(
+                    text=Strings.BUTTON_START,
+                    callback_data="flow:start",
+                    icon_custom_emoji_id=Icons.FORM,
+                    style="primary",
+                )
+            ]
+        ]
+        if can_report:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=Strings.REPORT_BUTTON,
+                        callback_data="flow:report",
+                        icon_custom_emoji_id=Icons.REPORT,
+                        style="danger",
+                    )
+                ]
+            )
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    @staticmethod
+    def _report_start_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=Strings.REPORT_BUTTON,
+                        callback_data="flow:report",
+                        icon_custom_emoji_id=Icons.REPORT,
+                        style="danger",
+                    )
+                ]
+            ]
+        )
+
+    @staticmethod
+    def _report_cancel_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="Отмена",
+                        callback_data="flow:report_cancel",
+                        icon_custom_emoji_id=Icons.REJECT,
+                        style="danger",
+                    )
+                ]
+            ]
+        )
+
+    @staticmethod
+    def _report_ask_cancel_keyboard(report_id: int) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="Отмена",
+                        callback_data=f"report:ask_cancel:{report_id}",
+                        icon_custom_emoji_id=Icons.REJECT,
+                        style="danger",
+                    )
+                ]
+            ]
+        )
+
+    @staticmethod
+    def _report_keyboard(report: Report) -> InlineKeyboardMarkup | None:
+        if report.status == "resolved":
+            return None
+        rows: list[list[InlineKeyboardButton]] = []
+        if report.status == "new":
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text="В работу",
+                        callback_data=f"report:take:{report.id}",
+                        icon_custom_emoji_id=Icons.TAKE,
+                        style="primary",
+                    )
+                ]
+            )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Вопрос",
+                    callback_data=f"report:ask:{report.id}",
+                    icon_custom_emoji_id=Icons.QUESTION,
+                    style="primary",
+                ),
+                InlineKeyboardButton(
+                    text="Решено",
+                    callback_data=f"report:resolve:{report.id}",
+                    icon_custom_emoji_id=Icons.ACCEPT,
+                    style="success",
+                ),
+            ]
+        )
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    def _format_report(self, report: Report) -> str:
+        labels = {
+            "new": "новая",
+            "in_progress": "в работе",
+            "question": "ждёт ответ игрока",
+            "resolved": "решена",
+        }
+        username = f"@{report.username}" if report.username else "без username"
+        lines = [
+            f"<b>Жалоба #{report.id}</b>",
+            f"Статус: <code>{labels.get(report.status, report.status)}</code>",
+            f"От: <code>{html.escape(report.nickname)}</code> ({html.escape(username)})",
+            f"Telegram ID: <code>{report.telegram_id}</code>",
+            f"Нарушитель: <code>{html.escape(report.offender)}</code>",
+            "",
+            html.escape(report.body),
+        ]
+        if report.taken_by_name:
+            lines.append(f"Взял: {html.escape(report.taken_by_name)}")
+        if report.question:
+            lines.append(f"Вопрос: {html.escape(report.question)}")
+        if report.answer:
+            lines.append(f"Ответ: {html.escape(report.answer)}")
+        if report.resolved_by_name:
+            lines.append(f"Закрыл: {html.escape(report.resolved_by_name)}")
+        return "\n".join(lines)
+
+    async def _refresh_report_message(self, bot: Bot, report: Report) -> None:
+        if report.admin_message_id is None:
+            return
+        try:
+            await bot.edit_message_text(
+                self._format_report(report),
+                chat_id=self.config.admin_chat_id,
+                message_id=report.admin_message_id,
+                reply_markup=self._report_keyboard(report),
+            )
+        except TelegramBadRequest:
+            pass
+
+    async def _clear_report_question_prompt(
+        self, bot: Bot, session: ReportQuestionSession
+    ) -> None:
+        if session.prompt_message_id is None:
+            return
+        try:
+            await bot.edit_message_reply_markup(
+                chat_id=session.message_chat_id,
+                message_id=session.prompt_message_id,
+                reply_markup=None,
+            )
+        except TelegramBadRequest:
+            pass
+
+    @staticmethod
+    def _incoming_media(message: Message) -> tuple[str, str] | None:
+        if message.photo:
+            return "photo", message.photo[-1].file_id
+        if message.video:
+            return "video", message.video.file_id
+        if message.video_note:
+            return "video_note", message.video_note.file_id
+        if message.animation:
+            return "animation", message.animation.file_id
+        if message.document:
+            return "document", message.document.file_id
+        return None
+
+    @staticmethod
+    def _media_label(media_type: str) -> str:
+        labels = {
+            "photo": "Фото",
+            "video": "Видео",
+            "video_note": "Видео",
+            "animation": "Видео",
+            "document": "Документ",
+        }
+        return labels.get(media_type, "Файл")
+
+    async def _send_media(
+        self, bot: Bot, chat_id: int, media_type: str, file_id: str
+    ) -> None:
+        if media_type == "photo":
+            await bot.send_photo(chat_id, file_id)
+        elif media_type == "video":
+            await bot.send_video(chat_id, file_id)
+        elif media_type == "video_note":
+            await bot.send_video_note(chat_id, file_id)
+        elif media_type == "animation":
+            await bot.send_animation(chat_id, file_id)
+        else:
+            await bot.send_document(chat_id, file_id)
+
+    @staticmethod
+    def _console_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="Отмена",
+                        callback_data="panel:console_cancel",
+                        icon_custom_emoji_id=Icons.REJECT,
+                        style="danger",
+                    )
                 ]
             ]
         )
@@ -1446,57 +2205,57 @@ class ApplicationFlow:
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="📝 Заявки",
+                        text="Заявки",
                         callback_data="panel:applications",
-                        style="primary",
+                        icon_custom_emoji_id=Icons.FORM,
                     ),
                     InlineKeyboardButton(
-                        text="📊 Статистика заявок",
+                        text="Статистика заявок",
                         callback_data="panel:stats",
-                        style="primary",
+                        icon_custom_emoji_id=Icons.STATS,
                     ),
                 ],
                 [
                     InlineKeyboardButton(
-                        text="🖥️ Панель сервера",
+                        text="Панель сервера",
                         callback_data="panel:server",
-                        style="primary",
+                        icon_custom_emoji_id=Icons.SERVER,
                     ),
                     InlineKeyboardButton(
-                        text="👥 Онлайн",
+                        text="Онлайн",
                         callback_data="panel:online",
-                        style="primary",
+                        icon_custom_emoji_id=Icons.ONLINE,
                     ),
                 ],
                 [
                     InlineKeyboardButton(
-                        text="⌨️ Консоль",
+                        text="Консоль",
                         callback_data="panel:console",
-                        style="danger",
+                        icon_custom_emoji_id=Icons.CONSOLE,
                     ),
                     InlineKeyboardButton(
-                        text="🔍 Поиск",
+                        text="Поиск",
                         callback_data="panel:search",
-                        style="primary",
+                        icon_custom_emoji_id=Icons.SEARCH,
                     ),
                 ],
                 [
                     InlineKeyboardButton(
-                        text="ℹ️ Информация",
+                        text="Информация",
                         callback_data="panel:info",
-                        style="primary",
+                        icon_custom_emoji_id=Icons.INFO,
                     ),
                     InlineKeyboardButton(
-                        text="📣 Рассылка",
+                        text="Рассылка",
                         callback_data="panel:broadcast",
-                        style="primary",
+                        icon_custom_emoji_id=Icons.BROADCAST,
                     ),
                 ],
                 [
                     InlineKeyboardButton(
                         text="В меню игрока",
                         callback_data="panel:player_menu",
-                        style="primary",
+                        icon_custom_emoji_id=Icons.PLAYER,
                     ),
                 ],
             ]

@@ -108,5 +108,30 @@ class ApplicationStoreTest(unittest.TestCase):
         asyncio.run(scenario())
 
 
+    def test_report_can_be_taken_once_then_closed(self) -> None:
+        async def scenario() -> None:
+            await self.store.init()
+            await self.store.create(1, "user", "Steve", ["16"])
+            self.assertEqual(await self.store.get_latest_nickname(1), "Steve")
+            report_id = await self.store.create_report(
+                1, "user", "Steve", "Alex", "grief", "photo", "file"
+            )
+            first, second = await asyncio.gather(
+                self.store.take_report(report_id, 9, "Admin"),
+                self.store.take_report(report_id, 8, "Other"),
+            )
+            self.assertEqual(sorted([first, second]), [False, True])
+            self.assertTrue(await self.store.ask_report(report_id, "when?"))
+            self.assertTrue(await self.store.answer_report(report_id, "yesterday"))
+            self.assertTrue(await self.store.resolve_report(report_id, 9, "Admin"))
+            self.assertFalse(await self.store.ask_report(report_id, "again"))
+            saved = await self.store.get_report(report_id)
+            assert saved is not None
+            self.assertEqual(saved.status, "resolved")
+            self.assertEqual(saved.answer, "yesterday")
+
+        asyncio.run(scenario())
+
+
 if __name__ == "__main__":
     unittest.main()
