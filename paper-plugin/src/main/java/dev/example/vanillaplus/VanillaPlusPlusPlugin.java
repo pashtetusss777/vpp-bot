@@ -18,8 +18,14 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Pattern;
 
 public final class VanillaPlusPlusPlugin extends JavaPlugin {
@@ -104,15 +110,26 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
             return;
         }
 
-        Bukkit.getScheduler().runTask(this, () -> {
-            boolean ok = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command);
-            console("Executed console command: " + command + " => " + (ok ? "ok" : "failed"));
-        });
+        final boolean ok;
+        try {
+            ok = callOnServerThread(() -> dispatchConsole(command));
+        } catch (Exception exception) {
+            console("Console command failed: " + exception.getMessage());
+            sendJson(exchange, 500, Strings.ERROR_SERVER_THREAD.get());
+            return;
+        }
 
         JsonObject response = new JsonObject();
-        response.addProperty("status", "queued");
+        response.addProperty("status", "ok");
+        response.addProperty("ok", ok);
         response.addProperty("command", command);
         sendJson(exchange, 200, gson.toJson(response));
+    }
+
+    private boolean dispatchConsole(String command) {
+        boolean ok = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command);
+        console("Executed console command: " + command + " => " + (ok ? "ok" : "failed"));
+        return ok;
     }
 
     @Override
@@ -151,13 +168,31 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
             return;
         }
 
-        Bukkit.getScheduler().runTask(this, () -> {
-            OfflinePlayer player = Bukkit.getOfflinePlayer(nickname);
-            player.setWhitelisted(true);
-            console("Whitelisted player " + nickname);
-        });
+        final boolean added;
+        try {
+            added = callOnServerThread(() -> whitelistPlayer(nickname));
+        } catch (Exception exception) {
+            console("Whitelist add failed for " + nickname + ": " + exception.getMessage());
+            sendJson(exchange, 500, Strings.ERROR_SERVER_THREAD.get());
+            return;
+        }
+        if (!added) {
+            sendJson(exchange, 404, Strings.ERROR_UNKNOWN_PLAYER.get());
+            return;
+        }
 
         sendJson(exchange, 200, Strings.STATUS_OK.get());
+    }
+
+    private boolean whitelistPlayer(String nickname) {
+        UUID uniqueId = Bukkit.getPlayerUniqueId(nickname);
+        if (uniqueId == null) {
+            return false;
+        }
+        OfflinePlayer player = Bukkit.getOfflinePlayer(uniqueId);
+        player.setWhitelisted(true);
+        console("Whitelisted player " + nickname);
+        return true;
     }
 
     private void handleServerStatus(HttpExchange exchange) throws IOException {
@@ -171,16 +206,29 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
             return;
         }
 
+        final String body;
+        try {
+            body = callOnServerThread(this::buildServerStatusJson);
+        } catch (Exception exception) {
+            console("Server status failed: " + exception.getMessage());
+            sendJson(exchange, 500, Strings.ERROR_SERVER_THREAD.get());
+            return;
+        }
+        sendJson(exchange, 200, body);
+    }
+
+    private String buildServerStatusJson() {
         JsonObject response = new JsonObject();
         response.addProperty("status", "ok");
         response.addProperty("name", Bukkit.getName());
         response.addProperty("version", Bukkit.getVersion());
+        response.addProperty("minecraft_version", Bukkit.getMinecraftVersion());
         response.addProperty("bukkit_version", Bukkit.getBukkitVersion());
         response.addProperty("online", Bukkit.getOnlinePlayers().size());
         response.addProperty("max_players", Bukkit.getMaxPlayers());
         response.addProperty("whitelist", Bukkit.hasWhitelist());
         response.addProperty("console_enabled", getConfig().getBoolean("console.enabled", false));
-        sendJson(exchange, 200, gson.toJson(response));
+        return gson.toJson(response);
     }
 
     private void handleServerOnline(HttpExchange exchange) throws IOException {
@@ -194,16 +242,28 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
             return;
         }
 
-        JsonObject response = new JsonObject();
+        final String body;
+        try {
+            body = callOnServerThread(this::buildOnlineJson);
+        } catch (Exception exception) {
+            console("Online list failed: " + exception.getMessage());
+            sendJson(exchange, 500, Strings.ERROR_SERVER_THREAD.get());
+            return;
+        }
+        sendJson(exchange, 200, body);
+    }
+
+    private String buildOnlineJson() {
         List<String> players = new ArrayList<>();
         for (Player player : Bukkit.getOnlinePlayers()) {
             players.add(player.getName());
         }
+        JsonObject response = new JsonObject();
         response.addProperty("status", "ok");
         response.addProperty("online", players.size());
         response.addProperty("max_players", Bukkit.getMaxPlayers());
         response.add("players", gson.toJsonTree(players));
-        sendJson(exchange, 200, gson.toJson(response));
+        return gson.toJson(response);
     }
 
     private void handlePlayerInfo(HttpExchange exchange) throws IOException {
@@ -223,6 +283,18 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
             return;
         }
 
+        final String body;
+        try {
+            body = callOnServerThread(() -> buildPlayerInfoJson(nickname));
+        } catch (Exception exception) {
+            console("Player info failed for " + nickname + ": " + exception.getMessage());
+            sendJson(exchange, 500, Strings.ERROR_SERVER_THREAD.get());
+            return;
+        }
+        sendJson(exchange, 200, body);
+    }
+
+    private String buildPlayerInfoJson(String nickname) {
         Player player = Bukkit.getPlayerExact(nickname);
         JsonObject response = new JsonObject();
         response.addProperty("status", "ok");
@@ -233,7 +305,36 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
             response.addProperty("ip", address.getAddress().getHostAddress());
             response.addProperty("port", address.getPort());
         }
-        sendJson(exchange, 200, gson.toJson(response));
+        return gson.toJson(response);
+    }
+
+    private <T> T callOnServerThread(Callable<T> task) throws Exception {
+        if (Bukkit.isPrimaryThread()) {
+            return task.call();
+        }
+
+        CompletableFuture<T> future = new CompletableFuture<>();
+        Bukkit.getScheduler().runTask(this, () -> {
+            try {
+                future.complete(task.call());
+            } catch (Throwable throwable) {
+                future.completeExceptionally(throwable);
+            }
+        });
+        try {
+            return future.get(4, TimeUnit.SECONDS);
+        } catch (TimeoutException exception) {
+            throw new IOException("Timed out waiting for the server thread", exception);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while waiting for the server thread", exception);
+        } catch (ExecutionException exception) {
+            Throwable cause = exception.getCause() == null ? exception : exception.getCause();
+            if (cause instanceof Exception checked) {
+                throw checked;
+            }
+            throw new IOException(cause);
+        }
     }
 
     private String getQueryParam(HttpExchange exchange, String name) {

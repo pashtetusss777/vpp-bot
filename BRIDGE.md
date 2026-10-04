@@ -19,7 +19,9 @@ Paper добавляет ник в whitelist
 - `paper-plugin/pom.xml` - Maven-проект для сборки jar.
 - `paper-plugin/src/main/resources/plugin.yml` - описание Paper-плагина.
 - `paper-plugin/src/main/resources/config.yml` - конфиг плагина.
-- `paper-plugin/src/main/java/dev/example/applicationbridge/ApplicationBridgePlugin.java` - логика bridge.
+- `paper-plugin/src/main/java/dev/example/vanillaplus/VanillaPlusPlusPlugin.java` - логика bridge.
+
+Плагин рассчитан на Paper 26.3 (`api-version: "26.3"`) и Java 25. Whitelist пишется через Paper API, не через RCON и не через протокол 777.
 
 ## Сборка
 
@@ -35,14 +37,14 @@ mvn -version
 Сборка:
 
 ```powershell
-cd D:\Projects\bot\paper-plugin
+cd paper-plugin
 mvn package
 ```
 
 Готовый jar появится в:
 
 ```text
-D:\Projects\bot\paper-plugin\target\application-bridge-0.1.0.jar
+paper-plugin\target\vanilla-plus-plus-bridge-0.1.0.jar
 ```
 
 ## Установка на сервер
@@ -53,7 +55,7 @@ D:\Projects\bot\paper-plugin\target\application-bridge-0.1.0.jar
 4. Открой файл:
 
 ```text
-plugins\ApplicationBridge\config.yml
+plugins\VanillaPlusPlus\config.yml
 ```
 
 5. Настрой:

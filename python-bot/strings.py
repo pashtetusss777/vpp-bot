@@ -10,6 +10,7 @@ class Strings(StrEnum):
     APPLICATION_NOT_FOUND = "Заявка не найдена."
     APPLICATION_ALREADY_PROCESSED = "Заявка уже обработана."
     WHITELIST_ADD_FAILED = "Не удалось добавить в whitelist."
+    PLAYER_NOTIFY_FAILED = "Решение сохранено, но не удалось отправить сообщение игроку."
     ACTION_ACCEPTED = "Принято ✅"
     ACTION_REJECTED = "Отклонено ❌"
     ACTION_BANNED = "Забанено ⛔"

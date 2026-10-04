@@ -30,6 +30,10 @@ pip install -r requirements.txt
 python bot.py
 ```
 
+## Minecraft 26.3
+
+Плагин собирается против Paper `26.3.build.151-beta` (`api-version: "26.3"`). Серверу нужна Java 25. Протокол Java Edition 26.3 — **777** (data version 5023); бот его не реализует. Whitelist идёт через Paper API: `getPlayerUniqueId` и `setWhitelisted`.
+
 ## Paper plugin
 
 1. Собери плагин:

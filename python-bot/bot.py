@@ -1,7 +1,10 @@
 ﻿import asyncio
+import functools
 import html
+import json
 import re
 import shutil
+import sqlite3
 from urllib.parse import quote
 from collections import Counter
 from dataclasses import dataclass, field
@@ -30,6 +33,32 @@ from strings import Strings
 
 
 NICKNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,16}$")
+
+
+def encode_answers(answers: list[str]) -> str:
+    return json.dumps(answers, ensure_ascii=False)
+
+
+def decode_answers(raw: str) -> list[str]:
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw.splitlines()
+    if isinstance(parsed, list) and all(isinstance(item, str) for item in parsed):
+        return parsed
+    return raw.splitlines()
+
+
+def _user_locked(method):
+    @functools.wraps(method)
+    async def wrapper(self, event, *args, **kwargs):
+        user = getattr(event, "from_user", None)
+        if user is None:
+            return None
+        async with self._lock_for(user.id):
+            return await method(self, event, *args, **kwargs)
+
+    return wrapper
 
 
 @dataclass(frozen=True)
@@ -210,7 +239,7 @@ class ApplicationStore:
                 INSERT INTO applications (telegram_id, username, nickname, answers)
                 VALUES (?, ?, ?, ?)
                 """,
-                (telegram_id, username, nickname, "\n".join(answers)),
+                (telegram_id, username, nickname, encode_answers(answers)),
             )
             await db.commit()
             self._backup_now("create")
@@ -313,12 +342,12 @@ class ApplicationStore:
                     (int(clean), int(clean), limit),
                 )
             else:
-                like = f"%{clean}%"
+                like = self._search_like(clean)
                 cursor = await db.execute(
                     """
                     SELECT id, telegram_id, username, nickname, answers, status, created_at, decided_by, decided_at, decided_by_name, decision_reason
                     FROM applications
-                    WHERE nickname LIKE ? OR username LIKE ?
+                    WHERE nickname LIKE ? ESCAPE '\\' OR username LIKE ? ESCAPE '\\'
                     ORDER BY id DESC
                     LIMIT ?
                     """,
@@ -339,11 +368,11 @@ class ApplicationStore:
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 """
-                SELECT DATE(created_at), COUNT(DISTINCT telegram_id)
+                SELECT DATE(created_at, 'localtime'), COUNT(DISTINCT telegram_id)
                 FROM applications
-                WHERE created_at >= DATETIME('now', ?)
-                GROUP BY DATE(created_at)
-                ORDER BY DATE(created_at)
+                WHERE DATE(created_at, 'localtime') >= DATE('now', 'localtime', ?)
+                GROUP BY DATE(created_at, 'localtime')
+                ORDER BY DATE(created_at, 'localtime')
                 """,
                 (f"-{days - 1} days",),
             )
@@ -383,18 +412,42 @@ class ApplicationStore:
         admin_id: int,
         admin_name: str,
         reason: str | None = None,
-    ) -> None:
+    ) -> bool:
         async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
                 """
                 UPDATE applications
                 SET status = ?, decided_by = ?, decided_by_name = ?, decision_reason = ?, decided_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND status = 'pending'
                 """,
                 (status, admin_id, admin_name, reason, application_id),
             )
             await db.commit()
-        self._backup_now("decide")
+            updated = cursor.rowcount == 1
+        if updated:
+            self._backup_now("decide")
+        return updated
+
+    async def reopen_pending(self, application_id: int, admin_id: int) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            cursor = await db.execute(
+                """
+                UPDATE applications
+                SET status = 'pending',
+                    decided_by = NULL,
+                    decided_by_name = NULL,
+                    decision_reason = NULL,
+                    decided_at = NULL
+                WHERE id = ? AND status = 'approved' AND decided_by = ?
+                """,
+                (application_id, admin_id),
+            )
+            await db.commit()
+            updated = cursor.rowcount == 1
+        if updated:
+            self._backup_now("reopen")
 
     async def unban_user(self, telegram_id: int, admin_id: int, admin_name: str) -> int:
         async with aiosqlite.connect(self.db_path) as db:
@@ -411,8 +464,10 @@ class ApplicationStore:
                 (admin_id, admin_name, telegram_id),
             )
             await db.commit()
+            updated = cursor.rowcount
+        if updated:
             self._backup_now("unban")
-            return cursor.rowcount
+        return updated
 
     def _restore_latest_backup_if_needed(self) -> None:
         if self.db_path.exists():
@@ -426,10 +481,21 @@ class ApplicationStore:
             return
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         backup_path = self.backup_dir / f"{self.db_path.stem}-{timestamp}-{reason}.db"
-        shutil.copy2(self.db_path, backup_path)
+        source = sqlite3.connect(self.db_path)
+        destination = sqlite3.connect(backup_path)
+        try:
+            source.backup(destination)
+        finally:
+            source.close()
+            destination.close()
         backups = sorted(self.backup_dir.glob(f"{self.db_path.stem}-*.db"))
         for old_backup in backups[: -self.backup_keep_last]:
             old_backup.unlink(missing_ok=True)
+
+    @staticmethod
+    def _search_like(value: str) -> str:
+        escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return f"%{escaped}%"
 
     @staticmethod
     async def _ensure_column(
@@ -447,7 +513,7 @@ class ApplicationStore:
             telegram_id=int(row[1]),
             username=str(row[2]) if row[2] else None,
             nickname=str(row[3]),
-            answers=str(row[4]).splitlines(),
+            answers=decode_answers(str(row[4])),
             status=str(row[5]),
             created_at=str(row[6]),
             decided_by=int(row[7]) if len(row) > 7 and row[7] is not None else None,
@@ -538,7 +604,11 @@ class ApplicationFlow:
         self.console_sessions: set[int] = set()
         self.reject_sessions: dict[int, RejectionSession] = {}
         self.broadcast_sessions: dict[int, BroadcastSession] = {}
+        self._user_locks: dict[int, asyncio.Lock] = {}
         self._register_handlers()
+
+    def _lock_for(self, user_id: int) -> asyncio.Lock:
+        return self._user_locks.setdefault(user_id, asyncio.Lock())
 
     def _register_handlers(self) -> None:
         self.router.message(Command("start", "panel"))(self.start)
@@ -553,6 +623,7 @@ class ApplicationFlow:
         )
         self.router.callback_query(F.data.startswith("panel:"))(self.handle_admin_panel)
 
+    @_user_locked
     async def start(self, message: Message) -> None:
         if message.chat.type != "private":
             if message.chat.id == self.config.admin_chat_id and self._is_admin(
@@ -609,8 +680,9 @@ class ApplicationFlow:
 
         return check
 
+    @_user_locked
     async def handle_flow(self, callback: CallbackQuery) -> None:
-        if callback.message.chat.type != "private":
+        if callback.message is None or callback.message.chat.type != "private":
             await self._safe_answer(
                 callback, Strings.ONLY_PRIVATE_ALERT, show_alert=True
             )
@@ -672,6 +744,7 @@ class ApplicationFlow:
             await self._safe_clear_reply_markup(callback.message)
             await callback.message.answer(self.config.messages.enter_nickname)
 
+    @_user_locked
     async def answer_question(self, message: Message, bot: Bot) -> None:
         user_id = message.from_user.id
         if await self._handle_admin_message(message, bot):
@@ -750,11 +823,18 @@ class ApplicationFlow:
         )
         await message.answer(self.config.messages.form_complete)
 
+    @_user_locked
     async def handle_admin_action(self, callback: CallbackQuery, bot: Bot) -> None:
         if not await self._allow_admin_callback(callback):
             return
 
-        _, action, raw_application_id = callback.data.split(":")
+        parts = (callback.data or "").split(":")
+        if len(parts) != 3 or not parts[2].isdigit():
+            await self._safe_answer(
+                callback, Strings.APPLICATION_NOT_FOUND, show_alert=True
+            )
+            return
+        _, action, raw_application_id = parts
         application_id = int(raw_application_id)
 
         if action == "view":
@@ -811,9 +891,17 @@ class ApplicationFlow:
         admin_name = self._admin_display_name(callback.from_user)
 
         if action == "approve":
+            if not await self.store.decide(
+                application_id, "approved", admin_id, admin_name
+            ):
+                await self._safe_answer(
+                    callback, Strings.APPLICATION_ALREADY_PROCESSED, show_alert=True
+                )
+                return
             try:
                 await self.bridge.add_to_whitelist(nickname)
             except Exception as exc:
+                await self.store.reopen_pending(application_id, admin_id)
                 await self._safe_answer(
                     callback, Strings.WHITELIST_ADD_FAILED, show_alert=True
                 )
@@ -822,17 +910,17 @@ class ApplicationFlow:
                 )
                 return
 
-            await self.store.decide(application_id, "approved", admin_id, admin_name)
             self.sessions.pop(telegram_id, None)
-            await bot.send_message(
-                telegram_id, self.config.messages.application_accepted
+            notified = await self._notify_player(
+                bot, telegram_id, self.config.messages.application_accepted
             )
-            await callback.message.edit_reply_markup(reply_markup=None)
-            await callback.message.answer(
-                self._format_decision_notice(
-                    application_id, nickname, "ПРИНЯТА", admin_name, "✅"
-                )
+            await self._safe_clear_reply_markup(callback.message)
+            notice = self._format_decision_notice(
+                application_id, nickname, "ПРИНЯТА", admin_name, "✅"
             )
+            if not notified:
+                notice += f"\n{Strings.PLAYER_NOTIFY_FAILED}"
+            await callback.message.answer(notice)
             await self._safe_answer(callback, Strings.ACTION_ACCEPTED)
             return
 
@@ -852,23 +940,40 @@ class ApplicationFlow:
             return
 
         if action == "ban":
-            await self.store.decide(application_id, "banned", admin_id, admin_name)
-            self.sessions.pop(telegram_id, None)
-            await bot.send_message(telegram_id, self.config.messages.application_banned)
-            await callback.message.edit_reply_markup(reply_markup=None)
-            await callback.message.answer(
-                self._format_decision_notice(
-                    application_id, nickname, "ЗАБАНЕНА", admin_name, "⛔"
+            if not await self.store.decide(
+                application_id, "banned", admin_id, admin_name
+            ):
+                await self._safe_answer(
+                    callback, Strings.APPLICATION_ALREADY_PROCESSED, show_alert=True
                 )
+                return
+            self.sessions.pop(telegram_id, None)
+            notified = await self._notify_player(
+                bot, telegram_id, self.config.messages.application_banned
             )
+            await self._safe_clear_reply_markup(callback.message)
+            notice = self._format_decision_notice(
+                application_id, nickname, "ЗАБАНЕНА", admin_name, "⛔"
+            )
+            if not notified:
+                notice += f"\n{Strings.PLAYER_NOTIFY_FAILED}"
+            await callback.message.answer(notice)
             await self._safe_answer(callback, Strings.ACTION_BANNED)
+            return
 
+        await self._safe_answer(callback)
+
+    @_user_locked
     async def handle_player_action(self, callback: CallbackQuery) -> None:
         if not await self._allow_admin_callback(callback):
             return
 
-        _, action, nickname = callback.data.split(":", maxsplit=2)
+        parts = (callback.data or "").split(":", maxsplit=2)
         await self._safe_answer(callback)
+        if len(parts) != 3 or not NICKNAME_RE.fullmatch(parts[2]):
+            await callback.message.answer(Strings.INVALID_NICKNAME)
+            return
+        _, action, nickname = parts
 
         if action == "menu":
             await callback.message.answer(
@@ -907,6 +1012,7 @@ class ApplicationFlow:
                 f"👢 Игрок <code>{html.escape(nickname)}</code> кикнут."
             )
 
+    @_user_locked
     async def handle_admin_panel(self, callback: CallbackQuery, bot: Bot) -> None:
         if not await self._allow_admin_callback(callback):
             return
@@ -980,6 +1086,7 @@ class ApplicationFlow:
         if section == "player_menu":
             await self._send_player_menu(callback.message, callback.from_user.id)
 
+    @_user_locked
     async def handle_admin_message(self, message: Message, bot: Bot) -> None:
         await self._handle_admin_message(message, bot)
 
@@ -1022,21 +1129,21 @@ class ApplicationFlow:
                 )
                 return True
 
-            pending = await self.store.get_pending(reject_session.application_id)
-            if pending is None:
+            admin_id = message.from_user.id
+            admin_name = self._admin_display_name(message.from_user)
+            if not await self.store.decide(
+                reject_session.application_id, "rejected", admin_id, admin_name, reason
+            ):
                 self.reject_sessions.pop(message.from_user.id, None)
                 await message.answer(Strings.APPLICATION_ALREADY_PROCESSED)
                 return True
 
-            admin_id = message.from_user.id
-            admin_name = self._admin_display_name(message.from_user)
-            await self.store.decide(
-                reject_session.application_id, "rejected", admin_id, admin_name, reason
-            )
             self.sessions.pop(reject_session.telegram_id, None)
             self.reject_sessions.pop(message.from_user.id, None)
-            await bot.send_message(
-                reject_session.telegram_id, self._format_rejection_message(reason)
+            notified = await self._notify_player(
+                bot,
+                reject_session.telegram_id,
+                self._format_rejection_message(reason),
             )
             try:
                 await bot.edit_message_reply_markup(
@@ -1046,15 +1153,16 @@ class ApplicationFlow:
                 )
             except TelegramBadRequest:
                 pass
-            await message.answer(
-                self._format_decision_notice(
-                    reject_session.application_id,
-                    reject_session.nickname,
-                    "ОТКЛОНЕНА",
-                    admin_name,
-                    "❌",
-                )
+            notice = self._format_decision_notice(
+                reject_session.application_id,
+                reject_session.nickname,
+                "ОТКЛОНЕНА",
+                admin_name,
+                "❌",
             )
+            if not notified:
+                notice += f"\n{Strings.PLAYER_NOTIFY_FAILED}"
+            await message.answer(notice)
             return True
 
         # Console command session (admin)
@@ -1180,7 +1288,7 @@ class ApplicationFlow:
             "<b>Панель сервера</b>\n"
             f"Bridge: <code>{html.escape(self.config.bridge.base_url)}</code>\n"
             f"Сервер: <code>{html.escape(str(status.get('name', 'unknown')))}</code>\n"
-            f"Версия: <code>{html.escape(str(status.get('bukkit_version') or status.get('version') or 'unknown'))}</code>\n"
+            f"Версия: <code>{html.escape(str(status.get('minecraft_version') or status.get('bukkit_version') or status.get('version') or 'unknown'))}</code>\n"
             f"Онлайн: <code>{status.get('online', 0)}/{status.get('max_players', 0)}</code>\n"
             f"Whitelist: <code>{whitelist}</code>\n"
             f"Консоль bridge: <code>{console}</code>"
@@ -1514,9 +1622,21 @@ class ApplicationFlow:
         except Exception:
             return ImageFont.load_default()
 
+    async def _notify_player(self, bot: Bot, telegram_id: int, text: str) -> bool:
+        try:
+            await bot.send_message(telegram_id, text)
+            return True
+        except Exception:
+            return False
+
     async def _allow_admin_callback(self, callback: CallbackQuery) -> bool:
-        if not self._is_admin(callback.from_user.id):
+        if callback.from_user is None or not self._is_admin(callback.from_user.id):
             await self._safe_answer(callback, Strings.NO_ACCESS, show_alert=True)
+            return False
+        if callback.message is None:
+            await self._safe_answer(
+                callback, Strings.ADMIN_ONLY_BUTTON, show_alert=True
+            )
             return False
         is_admin_chat = callback.message.chat.id == self.config.admin_chat_id
         is_private = callback.message.chat.type == "private"

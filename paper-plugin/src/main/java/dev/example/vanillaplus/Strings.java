@@ -18,6 +18,8 @@ public enum Strings {
     ERROR_INVALID_COMMAND("{\"error\":\"invalid_command\"}"),
     ERROR_FORBIDDEN_COMMAND("{\"error\":\"forbidden_command\"}"),
     ERROR_INVALID_NICKNAME("{\"error\":\"invalid_nickname\"}"),
+    ERROR_UNKNOWN_PLAYER("{\"error\":\"unknown_player\"}"),
+    ERROR_SERVER_THREAD("{\"error\":\"server_thread\"}"),
     STATUS_OK("{\"status\":\"ok\"}");
 
     private final String value;

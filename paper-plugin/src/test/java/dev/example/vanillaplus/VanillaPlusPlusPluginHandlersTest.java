@@ -188,4 +188,60 @@ class VanillaPlusPlusPluginHandlersTest {
         assertEquals(422, ex.getStatus());
         assertEquals(Strings.ERROR_INVALID_NICKNAME.get(), ex.getResponseBodyString());
     }
+
+    @Test
+    void whitelistAdd_unknownPlayer_returns404() throws Exception {
+        org.bukkit.Bukkit.resolveNames = false;
+        org.bukkit.Bukkit.lastWhitelisted = null;
+        try {
+            VanillaPlusPlusPlugin plugin = new VanillaPlusPlusPlugin();
+            setToken(plugin, "secret");
+            MockHttpExchange ex = new MockHttpExchange("POST", new Gson().toJson(java.util.Map.of("nickname", "Steve")));
+            ex.getRequestHeaders().add("Authorization", "Bearer secret");
+
+            Method m = VanillaPlusPlusPlugin.class.getDeclaredMethod("handleWhitelistAdd", HttpExchange.class);
+            m.setAccessible(true);
+            m.invoke(plugin, ex);
+
+            assertEquals(404, ex.getStatus());
+            assertEquals(Strings.ERROR_UNKNOWN_PLAYER.get(), ex.getResponseBodyString());
+            assertNull(org.bukkit.Bukkit.lastWhitelisted);
+        } finally {
+            org.bukkit.Bukkit.resolveNames = true;
+        }
+    }
+
+    @Test
+    void whitelistAdd_resolvedPlayer_whitelistsUuid() throws Exception {
+        org.bukkit.Bukkit.resolveNames = true;
+        org.bukkit.Bukkit.lastWhitelisted = null;
+        VanillaPlusPlusPlugin plugin = new VanillaPlusPlusPlugin();
+        setToken(plugin, "secret");
+        MockHttpExchange ex = new MockHttpExchange("POST", new Gson().toJson(java.util.Map.of("nickname", "Steve")));
+        ex.getRequestHeaders().add("Authorization", "Bearer secret");
+
+        Method m = VanillaPlusPlusPlugin.class.getDeclaredMethod("handleWhitelistAdd", HttpExchange.class);
+        m.setAccessible(true);
+        m.invoke(plugin, ex);
+
+        assertEquals(200, ex.getStatus());
+        assertEquals(Strings.STATUS_OK.get(), ex.getResponseBodyString());
+        assertNotNull(org.bukkit.Bukkit.lastWhitelisted);
+        assertTrue(org.bukkit.Bukkit.lastWhitelisted.isWhitelisted());
+    }
+
+    @Test
+    void serverStatus_includesMinecraftVersion() throws Exception {
+        VanillaPlusPlusPlugin plugin = new VanillaPlusPlusPlugin();
+        setToken(plugin, "secret");
+        MockHttpExchange ex = new MockHttpExchange("GET", null);
+        ex.getRequestHeaders().add("Authorization", "Bearer secret");
+
+        Method m = VanillaPlusPlusPlugin.class.getDeclaredMethod("handleServerStatus", HttpExchange.class);
+        m.setAccessible(true);
+        m.invoke(plugin, ex);
+
+        assertEquals(200, ex.getStatus());
+        assertTrue(ex.getResponseBodyString().contains("\"minecraft_version\":\"26.3\""));
+    }
 }
