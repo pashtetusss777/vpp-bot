@@ -661,7 +661,9 @@ class ApplicationFlow:
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text=Strings.BUTTON_START, callback_data="flow:start"
+                            text=Strings.BUTTON_START,
+                            callback_data="flow:start",
+                            style="primary",
                         )
                     ]
                 ]
@@ -714,7 +716,9 @@ class ApplicationFlow:
                     inline_keyboard=[
                         [
                             InlineKeyboardButton(
-                                text="Я ознакомлен", callback_data="flow:agree"
+                                text="Я ознакомлен",
+                                callback_data="flow:agree",
+                                style="success",
                             )
                         ]
                     ]
@@ -1215,6 +1219,7 @@ class ApplicationFlow:
                     InlineKeyboardButton(
                         text=f"Открыть #{application.id}",
                         callback_data=f"app:view:{application.id}",
+                        style="primary",
                     )
                 ]
             )
@@ -1244,6 +1249,7 @@ class ApplicationFlow:
                     InlineKeyboardButton(
                         text=f"Открыть #{application.id}",
                         callback_data=f"app:view:{application.id}",
+                        style="primary",
                     )
                 ]
             )
@@ -1315,7 +1321,9 @@ class ApplicationFlow:
         buttons = [
             [
                 InlineKeyboardButton(
-                    text=str(player), callback_data=f"player:menu:{player}"
+                    text=str(player),
+                    callback_data=f"player:menu:{player}",
+                    style="primary",
                 )
             ]
             for player in players[:20]
@@ -1381,13 +1389,19 @@ class ApplicationFlow:
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Принять", callback_data=f"app:approve:{application_id}"
+                        text="Принять",
+                        callback_data=f"app:approve:{application_id}",
+                        style="success",
                     ),
                     InlineKeyboardButton(
-                        text="Отклонить", callback_data=f"app:reject:{application_id}"
+                        text="Отклонить",
+                        callback_data=f"app:reject:{application_id}",
+                        style="danger",
                     ),
                     InlineKeyboardButton(
-                        text="Бан", callback_data=f"app:ban:{application_id}"
+                        text="Бан",
+                        callback_data=f"app:ban:{application_id}",
+                        style="danger",
                     ),
                 ]
             ]
@@ -1399,7 +1413,9 @@ class ApplicationFlow:
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="♻️ Разбанить", callback_data=f"app:unban:{application_id}"
+                        text="♻️ Разбанить",
+                        callback_data=f"app:unban:{application_id}",
+                        style="success",
                     )
                 ]
             ]
@@ -1411,10 +1427,14 @@ class ApplicationFlow:
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="ℹ️ Инфо", callback_data=f"player:info:{nickname}"
+                        text="ℹ️ Инфо",
+                        callback_data=f"player:info:{nickname}",
+                        style="primary",
                     ),
                     InlineKeyboardButton(
-                        text="👢 Кик", callback_data=f"player:kick:{nickname}"
+                        text="👢 Кик",
+                        callback_data=f"player:kick:{nickname}",
+                        style="danger",
                     ),
                 ]
             ]
@@ -1426,37 +1446,57 @@ class ApplicationFlow:
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="📝 Заявки", callback_data="panel:applications"
+                        text="📝 Заявки",
+                        callback_data="panel:applications",
+                        style="primary",
                     ),
                     InlineKeyboardButton(
-                        text="📊 Статистика заявок", callback_data="panel:stats"
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="🖥️ Панель сервера", callback_data="panel:server"
-                    ),
-                    InlineKeyboardButton(
-                        text="👥 Онлайн", callback_data="panel:online"
+                        text="📊 Статистика заявок",
+                        callback_data="panel:stats",
+                        style="primary",
                     ),
                 ],
                 [
                     InlineKeyboardButton(
-                        text="⌨️ Консоль", callback_data="panel:console"
-                    ),
-                    InlineKeyboardButton(text="🔍 Поиск", callback_data="panel:search"),
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="ℹ️ Информация", callback_data="panel:info"
+                        text="🖥️ Панель сервера",
+                        callback_data="panel:server",
+                        style="primary",
                     ),
                     InlineKeyboardButton(
-                        text="📣 Рассылка", callback_data="panel:broadcast"
+                        text="👥 Онлайн",
+                        callback_data="panel:online",
+                        style="primary",
                     ),
                 ],
                 [
                     InlineKeyboardButton(
-                        text="В меню игрока", callback_data="panel:player_menu"
+                        text="⌨️ Консоль",
+                        callback_data="panel:console",
+                        style="danger",
+                    ),
+                    InlineKeyboardButton(
+                        text="🔍 Поиск",
+                        callback_data="panel:search",
+                        style="primary",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="ℹ️ Информация",
+                        callback_data="panel:info",
+                        style="primary",
+                    ),
+                    InlineKeyboardButton(
+                        text="📣 Рассылка",
+                        callback_data="panel:broadcast",
+                        style="primary",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="В меню игрока",
+                        callback_data="panel:player_menu",
+                        style="primary",
                     ),
                 ],
             ]
