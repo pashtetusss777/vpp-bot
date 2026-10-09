@@ -1,6 +1,18 @@
 name: VanillaPlusPlus
 version: ${project.version}
 main: dev.example.vanillaplus.VanillaPlusPlusPlugin
-api-version: "26.3"
+api-version: "26.2"
 author: vanilla++
-description: Vanilla++ local HTTP bridge for Telegram application bot.
+description: Local HTTP bridge for the Telegram application bot and the server chat.
+commands:
+  tgbridge:
+    description: Telegram chat bridge
+    usage: /tgbridge <reload|toggle|send>
+    permission: vanillaplus.tgbridge
+permissions:
+  vanillaplus.tgbridge:
+    default: true
+  vanillaplus.tgbridge.reload:
+    default: op
+  vanillaplus.tgbridge.send:
+    default: op

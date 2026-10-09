@@ -35,6 +35,7 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
     private HttpServer server;
     private ExecutorService executor;
     private String token;
+    private ChatSync chatSync;
 
     @Override
     public void onEnable() {
@@ -57,6 +58,11 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
             if (getConfig().getBoolean("console.enabled", false)) {
                 server.createContext(Strings.CONSOLE_EXEC_ENDPOINT.get(), this::handleConsoleExec);
             }
+            chatSync = new ChatSync(this, gson);
+            chatSync.register();
+            server.createContext(Strings.CHAT_EVENTS_ENDPOINT.get(), this::handleChatEvents);
+            server.createContext(Strings.CHAT_BROADCAST_ENDPOINT.get(), this::handleChatBroadcast);
+            server.createContext(Strings.CHAT_TPS_ENDPOINT.get(), this::handleChatTps);
             executor = Executors.newSingleThreadExecutor();
             server.setExecutor(executor);
             server.start();
@@ -134,6 +140,14 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (chatSync != null && chatSync.enabled()) {
+            chatSync.serverStopped();
+            try {
+                Thread.sleep(1200);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            }
+        }
         if (server != null) {
             server.stop(1);
         }
@@ -141,6 +155,91 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
             executor.shutdownNow();
         }
         console(Strings.BRIDGE_STOPPED.get());
+    }
+
+    private void handleChatEvents(HttpExchange exchange) throws IOException {
+        if (!exchange.getRequestMethod().equalsIgnoreCase("GET")) {
+            sendJson(exchange, 405, Strings.ERROR_METHOD_NOT_ALLOWED.get());
+            return;
+        }
+        if (!isAuthorized(exchange)) {
+            sendJson(exchange, 401, Strings.ERROR_UNAUTHORIZED.get());
+            return;
+        }
+        long after = 0;
+        String rawAfter = getQueryParam(exchange, "after");
+        if (rawAfter != null && !rawAfter.isBlank()) {
+            try {
+                after = Long.parseLong(rawAfter);
+            } catch (NumberFormatException exception) {
+                sendJson(exchange, 422, Strings.ERROR_INVALID_JSON.get());
+                return;
+            }
+        }
+        sendJson(exchange, 200, chatSync.poll(after));
+    }
+
+    private void handleChatBroadcast(HttpExchange exchange) throws IOException {
+        if (!exchange.getRequestMethod().equalsIgnoreCase("POST")) {
+            sendJson(exchange, 405, Strings.ERROR_METHOD_NOT_ALLOWED.get());
+            return;
+        }
+        if (!isAuthorized(exchange)) {
+            sendJson(exchange, 401, Strings.ERROR_UNAUTHORIZED.get());
+            return;
+        }
+        String sender;
+        String text;
+        String reply;
+        try (InputStreamReader reader = new InputStreamReader(exchange.getRequestBody(), StandardCharsets.UTF_8)) {
+            JsonObject body = gson.fromJson(reader, JsonObject.class);
+            sender = body != null && body.has("sender") ? body.get("sender").getAsString() : "";
+            text = body != null && body.has("text") ? body.get("text").getAsString() : "";
+            reply = body != null && body.has("reply") && !body.get("reply").isJsonNull()
+                    ? body.get("reply").getAsString()
+                    : "";
+        } catch (JsonParseException | IllegalStateException exception) {
+            sendJson(exchange, 400, Strings.ERROR_INVALID_JSON.get());
+            return;
+        }
+        if (sender.isBlank() || text.isBlank()) {
+            sendJson(exchange, 422, Strings.ERROR_INVALID_JSON.get());
+            return;
+        }
+        final String from = sender;
+        final String message = text;
+        final String quoted = reply;
+        try {
+            callOnServerThread(() -> {
+                chatSync.broadcast(from, message, quoted);
+                return true;
+            });
+        } catch (Exception exception) {
+            console("Chat broadcast failed: " + exception.getMessage());
+            sendJson(exchange, 500, Strings.ERROR_SERVER_THREAD.get());
+            return;
+        }
+        sendJson(exchange, 200, Strings.STATUS_OK.get());
+    }
+
+    private void handleChatTps(HttpExchange exchange) throws IOException {
+        if (!exchange.getRequestMethod().equalsIgnoreCase("GET")) {
+            sendJson(exchange, 405, Strings.ERROR_METHOD_NOT_ALLOWED.get());
+            return;
+        }
+        if (!isAuthorized(exchange)) {
+            sendJson(exchange, 401, Strings.ERROR_UNAUTHORIZED.get());
+            return;
+        }
+        final String body;
+        try {
+            body = callOnServerThread(chatSync::tps);
+        } catch (Exception exception) {
+            console("TPS query failed: " + exception.getMessage());
+            sendJson(exchange, 500, Strings.ERROR_SERVER_THREAD.get());
+            return;
+        }
+        sendJson(exchange, 200, body);
     }
 
     private void handleWhitelistAdd(HttpExchange exchange) throws IOException {

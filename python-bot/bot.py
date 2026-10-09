@@ -29,6 +29,7 @@ from aiogram.types import (
     Message,
 )
 from PIL import Image, ImageDraw, ImageFont
+from chat_bridge import ChatBridgeSettings, ForumChatBridge, load_chat_bridge_settings
 from strings import Icons, Strings
 
 
@@ -93,6 +94,7 @@ class AppConfig:
     db_backup_keep_last: int
     questions: list[str]
     messages: BotMessages
+    chat_bridge: ChatBridgeSettings
 
 
 @dataclass
@@ -223,6 +225,7 @@ def load_config() -> AppConfig:
             application_rejected=str(messages["APPLICATION_REJECTED"]),
             application_banned=str(messages["APPLICATION_BANNED"]),
         ),
+        chat_bridge=load_chat_bridge_settings(raw, int(raw["FORUM_CHAT_ID"])),
     )
 
 
@@ -726,6 +729,19 @@ class MinecraftBridge:
     async def get_online(self) -> dict[str, Any]:
         return await self._get_json("/server/online")
 
+    async def poll_chat_events(self, after: int) -> list[dict[str, Any]]:
+        data = await self._get_json(f"/chat/events?after={after}")
+        events = data.get("events") or []
+        if not isinstance(events, list):
+            return []
+        return [event for event in events if isinstance(event, dict)]
+
+    async def broadcast_chat(self, sender: str, text: str, reply: str | None) -> None:
+        await self._post_json("/chat/broadcast", {"sender": sender, "text": text, "reply": reply})
+
+    async def get_tps(self) -> dict[str, Any]:
+        return await self._get_json("/chat/tps")
+
     async def get_player_info(self, nickname: str) -> dict[str, Any]:
         return await self._get_json(f"/player/info?name={quote(nickname)}")
 
@@ -783,6 +799,23 @@ class MinecraftBridge:
                     raise RuntimeError(f"Bridge returned unexpected JSON: {body}")
                 return data
 
+    async def _post_json(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+        timeout = aiohttp.ClientTimeout(total=self.config.timeout_seconds)
+        headers = {"Authorization": f"Bearer {self.config.token}"}
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.post(
+                f"{self.config.base_url}{endpoint}", json=payload
+            ) as response:
+                body = await response.text()
+                if response.status >= 400:
+                    raise RuntimeError(
+                        f"Bridge returned HTTP {response.status}: {body}"
+                    )
+                if not body:
+                    return {}
+                data = await response.json(content_type=None)
+                return data if isinstance(data, dict) else {}
+
 
 class ApplicationFlow:
     def __init__(
@@ -809,6 +842,7 @@ class ApplicationFlow:
     def _register_handlers(self) -> None:
         self.router.message(Command("start"))(self.start)
         self.router.message(Command("admins"))(self.open_admin_panel)
+        self.router.message(Command("topic"))(self.show_topic)
         self.router.message(F.chat.id == self.config.admin_chat_id)(
             self.handle_admin_message
         )
@@ -842,6 +876,22 @@ class ApplicationFlow:
 
         await message.answer(
             Strings.ADMIN_PANEL, reply_markup=self._admin_panel_keyboard()
+        )
+
+    async def show_topic(self, message: Message) -> None:
+        thread_id = message.message_thread_id
+        if thread_id is None:
+            await message.answer(
+                "Это сообщение не в теме форума.\n"
+                f"Chat ID: <code>{message.chat.id}</code>\n"
+                "Для чата без тем оставьте <code>STATUS_TOPIC_ID</code> и <code>CHAT_TOPIC_ID</code> пустыми."
+            )
+            return
+        await message.answer(
+            f"Topic ID: <code>{thread_id}</code>\n"
+            f"Chat ID: <code>{message.chat.id}</code>\n"
+            f"Статус: <code>STATUS_TOPIC_ID: {thread_id}</code>\n"
+            f"Чат: <code>CHAT_TOPIC_ID: {thread_id}</code>"
         )
 
     async def _send_player_menu(self, message: Message, user_id: int) -> None:
@@ -2483,10 +2533,16 @@ async def main() -> None:
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode="HTML"))
     dispatcher = Dispatcher()
-    flow = ApplicationFlow(config, store, MinecraftBridge(config.bridge))
+    minecraft = MinecraftBridge(config.bridge)
+    flow = ApplicationFlow(config, store, minecraft)
+    forum = ForumChatBridge(config.chat_bridge, minecraft)
     dispatcher.include_router(flow.router)
-
-    await dispatcher.start_polling(bot)
+    dispatcher.include_router(forum.router)
+    poller = asyncio.create_task(forum.run(bot))
+    try:
+        await dispatcher.start_polling(bot)
+    finally:
+        poller.cancel()
 
 
 if __name__ == "__main__":

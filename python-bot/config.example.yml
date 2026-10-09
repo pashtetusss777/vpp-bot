@@ -35,6 +35,53 @@ BRIDGE:
   TOKEN: "change-this-long-random-secret"
   TIMEOUT_SECONDS: 5
 
+CHAT_BRIDGE:
+  ENABLED: true
+  # Номера тем форума. Узнать номер: /topic в нужной теме.
+  # STATUS — запуск и остановка сервера.
+  # CHAT — сообщения игроков, вход, выход, смерти и достижения.
+  STATUS_TOPIC_ID: ""
+  CHAT_TOPIC_ID: ""
+  MERGE_WINDOW: 0
+  LEAVE_JOIN_MERGE_WINDOW: 0
+  REQUIRE_PREFIX_MINECRAFT: ""
+  REQUIRE_PREFIX_TELEGRAM: ""
+  KEEP_PREFIX: false
+  USE_REAL_USERNAME: false
+  SILENT_EVENTS: []
+  EVENTS:
+    START: true
+    STOP: true
+    JOIN: true
+    LEAVE: true
+    DEATH: true
+    ADVANCEMENT: true
+    ADVANCEMENT_TASK: true
+    ADVANCEMENT_GOAL: true
+    ADVANCEMENT_CHALLENGE: true
+    ADVANCEMENT_DESCRIPTION: true
+  # Вид сообщений в Telegram. Можно HTML: <b>, <i>, <u>, <s>, <code>, <tg-spoiler>.
+  # Подстановки: {name}, {text}, {title}, {description}, {count}, {players},
+  # {tps}, {tps5m}, {tps15m}, {mspt}, {error}. Пустая строка — не отправлять.
+  # Удалите ключ, чтобы вернуть вид по умолчанию.
+  FORMAT:
+    SERVER_START: "✅ Сервер запущен!"
+    SERVER_STOP: "❌ Сервер остановлен!"
+    JOIN: "🥳 {name} зашёл на сервер"
+    FIRST_JOIN: "🥳 {name} в первый раз зашёл на сервер"
+    LEAVE: "😕 {name} покинул сервер"
+    DEATH: "☠️ {text}"
+    DEATH_UNKNOWN: "☠️ {name} погиб"
+    ADVANCEMENT_TASK: "😼 {name} получил достижение <b>{title}</b>"
+    ADVANCEMENT_GOAL: "🎯 {name} достиг цели <b>{title}</b>"
+    ADVANCEMENT_CHALLENGE: "🏅 {name} завершил испытание <b>{title}</b>"
+    ADVANCEMENT_DESCRIPTION: "\n<i>{description}</i>"
+    CHAT: "<b>{name}</b>: {text}"
+    LIST: "📝 Онлайн {count}: {players}"
+    LIST_EMPTY: "📝 Сейчас никто не играет"
+    TPS: "📊 TPS: <code>{tps}</code>\n⏱️ MSPT: <code>{mspt}</code>"
+    SERVER_UNAVAILABLE: "Сервер недоступен: {error}"
+
 DATABASE:
   PATH: "applications.db"
   BACKUP_DIR: "backups"
