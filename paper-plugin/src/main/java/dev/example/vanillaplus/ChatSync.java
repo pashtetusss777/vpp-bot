@@ -71,11 +71,7 @@ public final class ChatSync implements Listener, CommandExecutor {
 
     /** Queues the stop event and waits until the bot has picked it up, at most {@code timeoutMillis}. */
     public void serverStopped(long timeoutMillis) {
-        enqueue("server_stop", null, null, null, null, null, false);
-        long stopId;
-        synchronized (events) {
-            stopId = nextId - 1;
-        }
+        long stopId = enqueue("server_stop", null, null, null, null, null, false);
         long deadline = System.currentTimeMillis() + timeoutMillis;
         try {
             while (deliveredUpTo < stopId && System.currentTimeMillis() < deadline) {
@@ -399,7 +395,7 @@ public final class ChatSync implements Listener, CommandExecutor {
         return PlainTextComponentSerializer.plainText().serialize(component).trim();
     }
 
-    private void enqueue(
+    private long enqueue(
             String type,
             String username,
             String display,
@@ -408,10 +404,10 @@ public final class ChatSync implements Listener, CommandExecutor {
             String description,
             boolean firstJoin
     ) {
-        enqueue(type, username, display, text, title, description, firstJoin, null);
+        return enqueue(type, username, display, text, title, description, firstJoin, null);
     }
 
-    private void enqueue(
+    private long enqueue(
             String type,
             String username,
             String display,
@@ -441,7 +437,7 @@ public final class ChatSync implements Listener, CommandExecutor {
             event.addProperty("advancement_type", advancementType);
         }
         event.addProperty("first_join", firstJoin);
-        push(event);
+        return push(event);
     }
 
     private JsonObject baseEvent(String type) {
@@ -450,14 +446,16 @@ public final class ChatSync implements Listener, CommandExecutor {
         return event;
     }
 
-    private void push(JsonObject event) {
+    private long push(JsonObject event) {
         synchronized (events) {
-            event.addProperty("id", nextId++);
+            long id = nextId++;
+            event.addProperty("id", id);
             event.addProperty("at", System.currentTimeMillis());
             events.add(event);
             while (events.size() > MAX_EVENTS) {
                 events.remove(0);
             }
+            return id;
         }
     }
 
