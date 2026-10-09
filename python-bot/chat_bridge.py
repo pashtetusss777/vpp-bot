@@ -35,9 +35,16 @@ MEDIA_LABELS = {
 
 
 class ServerLink(Protocol):
-    async def poll_chat_events(self, after: int) -> list[dict[str, Any]]: ...
+    async def poll_chat_events(self, after: int) -> tuple[str, list[dict[str, Any]]]: ...
 
-    async def broadcast_chat(self, sender: str, text: str, reply: str | None) -> None: ...
+    async def broadcast_chat(
+        self,
+        sender: str,
+        text: str,
+        reply: str | None,
+        message_format: str | None = None,
+        reply_format: str | None = None,
+    ) -> None: ...
 
     async def get_tps(self) -> dict[str, Any]: ...
 
@@ -68,6 +75,10 @@ class ChatBridgeSettings:
     advancement_challenge: bool
     advancement_description: bool
     formats: dict[str, str] = field(default_factory=dict)
+    minecraft_message_format: str | None = None
+    minecraft_reply_format: str | None = None
+    minecraft_reply_enabled: bool = True
+    minecraft_edit_prefix: str = "✎ "
 
     def fmt(self, key: str) -> str:
         return self.formats.get(key, DEFAULT_FORMATS[key])
@@ -112,6 +123,7 @@ def load_chat_bridge_settings(raw: dict[str, Any], forum_chat_id: int) -> ChatBr
     section = raw.get("CHAT_BRIDGE") or {}
     events = section.get("EVENTS") or {}
     silent = section.get("SILENT_EVENTS") or []
+    minecraft = section.get("MINECRAFT_FORMAT") or {}
     fallback = _optional_topic(section.get("TOPIC_ID"))
     status_topic = (
         _optional_topic(section.get("STATUS_TOPIC_ID"))
@@ -146,7 +158,20 @@ def load_chat_bridge_settings(raw: dict[str, Any], forum_chat_id: int) -> ChatBr
         advancement_challenge=bool(events.get("ADVANCEMENT_CHALLENGE", True)),
         advancement_description=bool(events.get("ADVANCEMENT_DESCRIPTION", True)),
         formats=_load_formats(section.get("FORMAT")),
+        minecraft_message_format=_optional_prefix(minecraft.get("MESSAGE")),
+        minecraft_reply_format=_optional_prefix(minecraft.get("REPLY")),
+        minecraft_reply_enabled=_reply_enabled(minecraft),
+        minecraft_edit_prefix=str(minecraft.get("EDIT_PREFIX", "✎ ") or ""),
     )
+
+
+def _reply_enabled(minecraft: dict[str, Any]) -> bool:
+    if "REPLY" not in minecraft:
+        return True
+    value = minecraft.get("REPLY")
+    if value is None or value is False:
+        return False
+    return str(value).strip().lower() not in {"", "false", "off", "no", "null", "none"}
 
 
 def _load_formats(value: Any) -> dict[str, str]:
@@ -179,19 +204,16 @@ def _optional_topic(value: Any) -> int | None:
 
 
 def take_new_events(
-    events: list[dict[str, Any]], cursor: int, primed: bool
+    events: list[dict[str, Any]], cursor: int, primed: bool, since_ms: int = 0
 ) -> tuple[int, bool, list[dict[str, Any]]]:
-    """The first successful poll only advances the cursor. Later polls return new events."""
-    if not primed:
-        latest = cursor
-        for event in events:
-            latest = max(latest, int(event.get("id") or 0))
-        return latest, True, []
+    """On the first poll, events queued before the bot started (older than since_ms) are skipped."""
     fresh: list[dict[str, Any]] = []
     for event in events:
         event_id = int(event.get("id") or 0)
-        if event_id > cursor:
-            cursor = event_id
+        if event_id <= cursor:
+            continue
+        cursor = event_id
+        if primed or int(event.get("at") or 0) >= since_ms:
             fresh.append(event)
     return cursor, True, fresh
 
@@ -440,6 +462,8 @@ class ForumChatBridge:
         self.router = Router()
         self._cursor = 0
         self._primed = False
+        self._session = ""
+        self._started_ms = int(time.time() * 1000) - 5000
         self._seen_server = False
         self._misses = 0
         self._stop_sent = False
@@ -458,11 +482,21 @@ class ForumChatBridge:
             )
         while True:
             try:
-                events = await self.server.poll_chat_events(self._cursor)
+                session, events = await self.server.poll_chat_events(self._cursor)
+                if self._misses >= 3:
+                    log.info("Сервер Minecraft снова на связи")
                 self._misses = 0
                 self._seen_server = True
+                if session != self._session:
+                    restarted = bool(self._session)
+                    self._session = session
+                    if restarted or self._cursor:
+                        # The plugin numbers events from 1 after each server start.
+                        self._cursor = 0
+                        self._primed = True
+                        continue
                 self._cursor, self._primed, fresh = take_new_events(
-                    events, self._cursor, self._primed
+                    events, self._cursor, self._primed, self._started_ms
                 )
                 for event in fresh:
                     await self._publish(bot, event)
@@ -475,7 +509,8 @@ class ForumChatBridge:
                     text = format_server_event({"type": "server_stop"}, self.settings)
                     if text is not None:
                         await self._send(bot, text, "server_stop")
-                log.warning("Chat bridge poll failed: %s", exc)
+                if self._misses == 1:
+                    log.warning("Сервер Minecraft не отвечает: %s", exc)
             await asyncio.sleep(1)
 
     def _accepts_chat(self, message: Message) -> bool:
@@ -517,7 +552,13 @@ class ForumChatBridge:
         if not body or not body.strip():
             return
         try:
-            await self.server.broadcast_chat(sender_name(message), body, reply_excerpt(message))
+            await self.server.broadcast_chat(
+                sender_name(message),
+                body,
+                reply_excerpt(message) if self.settings.minecraft_reply_enabled else None,
+                self.settings.minecraft_message_format,
+                self.settings.minecraft_reply_format,
+            )
         except Exception as exc:
             log.warning("Could not forward Telegram message: %s", exc)
 
@@ -530,7 +571,13 @@ class ForumChatBridge:
         if not body:
             return
         try:
-            await self.server.broadcast_chat(sender_name(message), f"✎ {body}", None)
+            await self.server.broadcast_chat(
+                sender_name(message),
+                f"{self.settings.minecraft_edit_prefix}{body}",
+                None,
+                self.settings.minecraft_message_format,
+                self.settings.minecraft_reply_format,
+            )
         except Exception as exc:
             log.warning("Could not forward edited Telegram message: %s", exc)
 
@@ -572,6 +619,10 @@ class ForumChatBridge:
         kind = str(event.get("type") or "")
         if kind == "server_start":
             self._stop_sent = False
+        if kind == "server_stop":
+            if self._stop_sent:
+                return
+            self._stop_sent = True
         if kind == "leave" and self.settings.leave_join_merge_window > 0:
             text = format_server_event(event, self.settings)
             if text is None:

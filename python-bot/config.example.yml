@@ -2,6 +2,8 @@ BOT_TOKEN: "PUT_TELEGRAM_BOT_TOKEN_HERE"
 BOT_USERNAME: "@example_bot"
 ADMIN_CHAT_ID: "-1001234567890"
 FORUM_CHAT_ID: "123456789"
+# Бот отвечает реплаем на сообщение, на которое реагирует.
+REPLY_TO_MESSAGES: true
 ADMINS:
   - "123456789"
 
@@ -81,6 +83,15 @@ CHAT_BRIDGE:
     LIST_EMPTY: "📝 Сейчас никто не играет"
     TPS: "📊 TPS: <code>{tps}</code>\n⏱️ MSPT: <code>{mspt}</code>"
     SERVER_UNAVAILABLE: "Сервер недоступен: {error}"
+  # Вид сообщений из Telegram внутри Minecraft. Формат MiniMessage:
+  # <aqua>, <gray>, <#ff8800>, <bold>, <gradient:#5e4fa2:#f79459>...</gradient>.
+  # Подстановки: <sender> — ник в Telegram, <text> — сообщение,
+  # <reply> — цитата, если это ответ. MESSAGE пусто — взять формат из конфига плагина.
+  # REPLY: false или "" — не показывать цитату в игре.
+  MINECRAFT_FORMAT:
+    MESSAGE: "<reply><aqua>[TG] <sender>:</aqua> <white><text></white>"
+    REPLY: "<gray>[Ответ: <reply>]</gray> "
+    EDIT_PREFIX: "✎ "
 
 DATABASE:
   PATH: "applications.db"

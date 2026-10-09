@@ -30,6 +30,7 @@ from aiogram.types import (
 )
 from PIL import Image, ImageDraw, ImageFont
 from chat_bridge import ChatBridgeSettings, ForumChatBridge, load_chat_bridge_settings
+from reply_context import RememberIncomingMessage, ReplyToIncoming
 from strings import Icons, Strings
 
 
@@ -95,6 +96,7 @@ class AppConfig:
     questions: list[str]
     messages: BotMessages
     chat_bridge: ChatBridgeSettings
+    reply_to_messages: bool = True
 
 
 @dataclass
@@ -226,6 +228,7 @@ def load_config() -> AppConfig:
             application_banned=str(messages["APPLICATION_BANNED"]),
         ),
         chat_bridge=load_chat_bridge_settings(raw, int(raw["FORUM_CHAT_ID"])),
+        reply_to_messages=bool(raw.get("REPLY_TO_MESSAGES", True)),
     )
 
 
@@ -729,15 +732,32 @@ class MinecraftBridge:
     async def get_online(self) -> dict[str, Any]:
         return await self._get_json("/server/online")
 
-    async def poll_chat_events(self, after: int) -> list[dict[str, Any]]:
+    async def poll_chat_events(self, after: int) -> tuple[str, list[dict[str, Any]]]:
         data = await self._get_json(f"/chat/events?after={after}")
+        session = str(data.get("session") or "")
         events = data.get("events") or []
         if not isinstance(events, list):
-            return []
-        return [event for event in events if isinstance(event, dict)]
+            return session, []
+        return session, [event for event in events if isinstance(event, dict)]
 
-    async def broadcast_chat(self, sender: str, text: str, reply: str | None) -> None:
-        await self._post_json("/chat/broadcast", {"sender": sender, "text": text, "reply": reply})
+    async def broadcast_chat(
+        self,
+        sender: str,
+        text: str,
+        reply: str | None,
+        message_format: str | None = None,
+        reply_format: str | None = None,
+    ) -> None:
+        await self._post_json(
+            "/chat/broadcast",
+            {
+                "sender": sender,
+                "text": text,
+                "reply": reply,
+                "format": message_format,
+                "reply_format": reply_format,
+            },
+        )
 
     async def get_tps(self) -> dict[str, Any]:
         return await self._get_json("/chat/tps")
@@ -2533,6 +2553,9 @@ async def main() -> None:
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode="HTML"))
     dispatcher = Dispatcher()
+    if config.reply_to_messages:
+        bot.session.middleware(ReplyToIncoming())
+        dispatcher.message.outer_middleware(RememberIncomingMessage())
     minecraft = MinecraftBridge(config.bridge)
     flow = ApplicationFlow(config, store, minecraft)
     forum = ForumChatBridge(config.chat_bridge, minecraft)

@@ -47,7 +47,9 @@ public final class ChatSync implements Listener, CommandExecutor {
     private final List<JsonObject> events = new ArrayList<>();
     private final Set<UUID> muted = ConcurrentHashMap.newKeySet();
     private final Path muteFile;
+    private final String session = Long.toString(System.currentTimeMillis(), 36);
     private long nextId = 1;
+    private volatile long deliveredUpTo = 0;
 
     public ChatSync(VanillaPlusPlusPlugin plugin, Gson gson) {
         this.plugin = plugin;
@@ -67,16 +69,34 @@ public final class ChatSync implements Listener, CommandExecutor {
         }
     }
 
-    public void serverStopped() {
+    /** Queues the stop event and waits until the bot has picked it up, at most {@code timeoutMillis}. */
+    public void serverStopped(long timeoutMillis) {
         enqueue("server_stop", null, null, null, null, null, false);
+        long stopId;
+        synchronized (events) {
+            stopId = nextId - 1;
+        }
+        long deadline = System.currentTimeMillis() + timeoutMillis;
+        try {
+            while (deliveredUpTo < stopId && System.currentTimeMillis() < deadline) {
+                Thread.sleep(50);
+            }
+            if (deliveredUpTo >= stopId) {
+                Thread.sleep(300);
+            }
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     public String poll(long after) {
         JsonArray batch = new JsonArray();
         synchronized (events) {
             for (JsonObject event : events) {
-                if (event.get("id").getAsLong() > after) {
+                long id = event.get("id").getAsLong();
+                if (id > after) {
                     batch.add(event);
+                    deliveredUpTo = Math.max(deliveredUpTo, id);
                 }
             }
             while (events.size() > MAX_EVENTS) {
@@ -85,19 +105,25 @@ public final class ChatSync implements Listener, CommandExecutor {
         }
         JsonObject response = new JsonObject();
         response.addProperty("status", "ok");
+        response.addProperty("session", session);
         response.add("events", batch);
         return gson.toJson(response);
     }
 
     public void broadcast(String sender, String text, String reply) {
-        String replyFormat = plugin.getConfig().getString(
-                "chat-bridge.format.reply",
-                "<gray>[ÐžÑ‚Ð²ÐµÑ‚: <reply>]</gray> "
-        );
-        String messageFormat = plugin.getConfig().getString(
-                "chat-bridge.format.telegram-message",
-                "<aqua>[TG] <sender>:</aqua> <white><text></white>"
-        );
+        broadcast(sender, text, reply, null, null);
+    }
+
+    public void broadcast(String sender, String text, String reply, String formatOverride, String replyOverride) {
+        String replyFormat = replyOverride != null && !replyOverride.isBlank()
+                ? replyOverride
+                : plugin.getConfig().getString("chat-bridge.format.reply", "<gray>[Ответ: <reply>]</gray> ");
+        String messageFormat = formatOverride != null && !formatOverride.isBlank()
+                ? formatOverride
+                : plugin.getConfig().getString(
+                        "chat-bridge.format.telegram-message",
+                        "<aqua>[TG] <sender>:</aqua> <white><text></white>"
+                );
         Component replyPart = Component.empty();
         if (reply != null && !reply.isBlank()) {
             replyPart = miniMessage(replyFormat, Placeholder.unparsed("reply", reply));
@@ -227,35 +253,35 @@ public final class ChatSync implements Listener, CommandExecutor {
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (args.length == 1 && args[0].equalsIgnoreCase("reload")) {
             if (!sender.isOp() && !(sender instanceof Player player && player.hasPermission("vanillaplus.tgbridge.reload"))) {
-                sender.sendMessage("ÐÐµÑ‚ Ð¿Ñ€Ð°Ð².");
+                sender.sendMessage("Нет прав.");
                 return true;
             }
             plugin.reloadConfig();
-            sender.sendMessage("ÐšÐ¾Ð½Ñ„Ð¸Ð³ Ð¼Ð¾ÑÑ‚Ð° Ð¿ÐµÑ€ÐµÑ‡Ð¸Ñ‚Ð°Ð½.");
+            sender.sendMessage("Конфиг моста перечитан.");
             return true;
         }
         if (args.length == 1 && args[0].equalsIgnoreCase("toggle")) {
             if (!(sender instanceof Player player)) {
-                sender.sendMessage("Ð­Ñ‚Ñƒ ÐºÐ¾Ð¼Ð°Ð½Ð´Ñƒ Ð¼Ð¾Ð¶ÐµÑ‚ Ð²Ñ‹Ð·Ð²Ð°Ñ‚ÑŒ Ñ‚Ð¾Ð»ÑŒÐºÐ¾ Ð¸Ð³Ñ€Ð¾Ðº.");
+                sender.sendMessage("Эту команду может вызвать только игрок.");
                 return true;
             }
             if (muted.remove(player.getUniqueId())) {
-                sender.sendMessage("Ð’Ñ‹ Ð±ÑƒÐ´ÐµÑ‚Ðµ Ð¿Ð¾Ð»ÑƒÑ‡Ð°Ñ‚ÑŒ Ð½Ð¾Ð²Ñ‹Ðµ ÑÐ¾Ð¾Ð±Ñ‰ÐµÐ½Ð¸Ñ Ð¾Ñ‚ Telegram.");
+                sender.sendMessage("Вы будете получать новые сообщения от Telegram.");
             } else {
                 muted.add(player.getUniqueId());
-                sender.sendMessage("Ð’Ñ‹ Ð½Ðµ Ð±ÑƒÐ´ÐµÑ‚Ðµ Ð¿Ð¾Ð»ÑƒÑ‡Ð°Ñ‚ÑŒ Ð½Ð¾Ð²Ñ‹Ðµ ÑÐ¾Ð¾Ð±Ñ‰ÐµÐ½Ð¸Ñ Ð¾Ñ‚ Telegram.");
+                sender.sendMessage("Вы не будете получать новые сообщения от Telegram.");
             }
             saveMuted();
             return true;
         }
         if (args.length >= 4 && args[0].equalsIgnoreCase("send")) {
             if (!sender.isOp() && !(sender instanceof Player player && player.hasPermission("vanillaplus.tgbridge.send"))) {
-                sender.sendMessage("ÐÐµÑ‚ Ð¿Ñ€Ð°Ð².");
+                sender.sendMessage("Нет прав.");
                 return true;
             }
             String format = args[1].toLowerCase(Locale.ROOT);
             if (!format.equals("plain") && !format.equals("html") && !format.equals("mm") && !format.equals("json")) {
-                sender.sendMessage("Ð¤Ð¾Ñ€Ð¼Ð°Ñ‚: plain, html, mm Ð¸Ð»Ð¸ json.");
+                sender.sendMessage("Формат: plain, html, mm или json.");
                 return true;
             }
             String text = String.join(" ", java.util.Arrays.copyOfRange(args, 3, args.length));
@@ -264,10 +290,10 @@ public final class ChatSync implements Listener, CommandExecutor {
             event.addProperty("chat", args[2]);
             event.addProperty("text", text);
             push(event);
-            sender.sendMessage("Ð¡Ð¾Ð¾Ð±Ñ‰ÐµÐ½Ð¸Ðµ Ð¿Ð¾ÑÑ‚Ð°Ð²Ð»ÐµÐ½Ð¾ Ð² Ð¾Ñ‡ÐµÑ€ÐµÐ´ÑŒ Telegram.");
+            sender.sendMessage("Сообщение поставлено в очередь Telegram.");
             return true;
         }
-        sender.sendMessage("Ð˜ÑÐ¿Ð¾Ð»ÑŒÐ·Ð¾Ð²Ð°Ð½Ð¸Ðµ: /tgbridge <reload|toggle|send>");
+        sender.sendMessage("Использование: /tgbridge <reload|toggle|send>");
         return true;
     }
 
@@ -325,35 +351,35 @@ public final class ChatSync implements Listener, CommandExecutor {
 
     private static String fallbackDeath(String name, DamageSource source) {
         if (source == null) {
-            return name + " Ð¿Ð¾Ð³Ð¸Ð±";
+            return name + " погиб";
         }
         Entity killer = source.getCausingEntity();
         String killerName = killer == null ? null : killer.getName();
         String type = source.getDamageType().getKey().getKey();
         return switch (type) {
-            case "fall" -> name + " Ñ€Ð°Ð·Ð±Ð¸Ð»ÑÑ Ð½Ð°ÑÐ¼ÐµÑ€Ñ‚ÑŒ";
-            case "drown" -> name + " ÑƒÑ‚Ð¾Ð½ÑƒÐ»";
-            case "lava", "in_fire", "on_fire", "hot_floor", "campfire" -> name + " ÑÐ³Ð¾Ñ€ÐµÐ»";
-            case "out_of_world" -> name + " Ð²Ñ‹Ð¿Ð°Ð» Ð¸Ð· Ð¼Ð¸Ñ€Ð°";
-            case "starve" -> name + " ÑƒÐ¼ÐµÑ€ Ð¾Ñ‚ Ð³Ð¾Ð»Ð¾Ð´Ð°";
+            case "fall" -> name + " разбился насмерть";
+            case "drown" -> name + " утонул";
+            case "lava", "in_fire", "on_fire", "hot_floor", "campfire" -> name + " сгорел";
+            case "out_of_world" -> name + " выпал из мира";
+            case "starve" -> name + " умер от голода";
             case "player_attack", "mob_attack", "mob_attack_no_aggro", "mace_smash", "spear" ->
-                    killerName == null ? name + " Ð±Ñ‹Ð» ÑƒÐ±Ð¸Ñ‚" : name + " Ð±Ñ‹Ð» ÑƒÐ±Ð¸Ñ‚: " + killerName;
+                    killerName == null ? name + " был убит" : name + " был убит: " + killerName;
             case "arrow", "mob_projectile", "trident", "thrown", "spit" ->
-                    killerName == null ? name + " Ð±Ñ‹Ð» Ð·Ð°ÑÑ‚Ñ€ÐµÐ»ÐµÐ½" : name + " Ð±Ñ‹Ð» Ð·Ð°ÑÑ‚Ñ€ÐµÐ»ÐµÐ½: " + killerName;
-            case "explosion", "player_explosion", "bad_respawn_point", "fireworks" -> name + " Ð²Ð·Ð¾Ñ€Ð²Ð°Ð»ÑÑ";
-            case "cactus" -> name + " ÑƒÐºÐ¾Ð»Ð¾Ð»ÑÑ Ð´Ð¾ ÑÐ¼ÐµÑ€Ñ‚Ð¸";
-            case "sweet_berry_bush" -> name + " Ð¸ÑÐºÐ¾Ð»Ð¾Ð»ÑÑ ÑÐ³Ð¾Ð´Ð½Ñ‹Ð¼ ÐºÑƒÑÑ‚Ð¾Ð¼";
-            case "fly_into_wall" -> name + " Ð¸ÑÐ¿Ñ‹Ñ‚Ð°Ð» ÐºÐ¸Ð½ÐµÑ‚Ð¸Ñ‡ÐµÑÐºÑƒÑŽ ÑÐ½ÐµÑ€Ð³Ð¸ÑŽ";
-            case "wither" -> name + " Ð¸ÑÑÐ¾Ñ…";
-            case "freeze" -> name + " Ð·Ð°Ð¼Ñ‘Ñ€Ð· Ð½Ð°ÑÐ¼ÐµÑ€Ñ‚ÑŒ";
-            case "cramming" -> name + " Ð±Ñ‹Ð» Ñ€Ð°Ð·Ð´Ð°Ð²Ð»ÐµÐ½";
-            case "lightning_bolt" -> name + " Ð±Ñ‹Ð» Ð¿Ð¾Ñ€Ð°Ð¶Ñ‘Ð½ Ð¼Ð¾Ð»Ð½Ð¸ÐµÐ¹";
-            case "magic", "indirect_magic" -> name + " Ð±Ñ‹Ð» ÑƒÐ±Ð¸Ñ‚ Ð¼Ð°Ð³Ð¸ÐµÐ¹";
-            case "dragon_breath" -> name + " Ð±Ñ‹Ð» Ð¾Ð±Ð¾Ð¶Ð¶Ñ‘Ð½ Ð´Ñ‹Ñ…Ð°Ð½Ð¸ÐµÐ¼ Ð´Ñ€Ð°ÐºÐ¾Ð½Ð°";
-            case "sting" -> name + " Ð±Ñ‹Ð» ÑƒÐ¶Ð°Ð»ÐµÐ½ Ð½Ð°ÑÐ¼ÐµÑ€Ñ‚ÑŒ";
-            case "falling_anvil", "falling_block", "falling_stalactite" -> name + " Ð±Ñ‹Ð» Ñ€Ð°Ð·Ð´Ð°Ð²Ð»ÐµÐ½";
-            case "stalagmite" -> name + " Ð½Ð°Ð¿Ð¾Ñ€Ð¾Ð»ÑÑ Ð½Ð° ÑÑ‚Ð°Ð»Ð°Ð³Ð¼Ð¸Ñ‚";
-            default -> killerName == null ? name + " Ð¿Ð¾Ð³Ð¸Ð±" : name + " Ð±Ñ‹Ð» ÑƒÐ±Ð¸Ñ‚: " + killerName;
+                    killerName == null ? name + " был застрелен" : name + " был застрелен: " + killerName;
+            case "explosion", "player_explosion", "bad_respawn_point", "fireworks" -> name + " взорвался";
+            case "cactus" -> name + " укололся до смерти";
+            case "sweet_berry_bush" -> name + " искололся ягодным кустом";
+            case "fly_into_wall" -> name + " испытал кинетическую энергию";
+            case "wither" -> name + " иссох";
+            case "freeze" -> name + " замёрз насмерть";
+            case "cramming" -> name + " был раздавлен";
+            case "lightning_bolt" -> name + " был поражён молнией";
+            case "magic", "indirect_magic" -> name + " был убит магией";
+            case "dragon_breath" -> name + " был обожжён дыханием дракона";
+            case "sting" -> name + " был ужален насмерть";
+            case "falling_anvil", "falling_block", "falling_stalactite" -> name + " был раздавлен";
+            case "stalagmite" -> name + " напоролся на сталагмит";
+            default -> killerName == null ? name + " погиб" : name + " был убит: " + killerName;
         };
     }
 
@@ -361,7 +387,7 @@ public final class ChatSync implements Listener, CommandExecutor {
         try {
             return MiniMessage.miniMessage().deserialize(format, resolvers);
         } catch (RuntimeException exception) {
-            plugin.getLogger().warning("ÐÐµÐ²ÐµÑ€Ð½Ñ‹Ð¹ Ñ„Ð¾Ñ€Ð¼Ð°Ñ‚ MiniMessage Ð² chat-bridge.format: " + exception.getMessage());
+            plugin.getLogger().warning("Неверный формат MiniMessage в chat-bridge.format: " + exception.getMessage());
             return MiniMessage.miniMessage().deserialize("<aqua>[TG] <sender>:</aqua> <white><text></white>", resolvers);
         }
     }

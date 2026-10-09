@@ -141,12 +141,7 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
     @Override
     public void onDisable() {
         if (chatSync != null && chatSync.enabled()) {
-            chatSync.serverStopped();
-            try {
-                Thread.sleep(1200);
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-            }
+            chatSync.serverStopped(5000);
         }
         if (server != null) {
             server.stop(1);
@@ -191,13 +186,15 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
         String sender;
         String text;
         String reply;
+        String format;
+        String replyFormat;
         try (InputStreamReader reader = new InputStreamReader(exchange.getRequestBody(), StandardCharsets.UTF_8)) {
             JsonObject body = gson.fromJson(reader, JsonObject.class);
             sender = body != null && body.has("sender") ? body.get("sender").getAsString() : "";
             text = body != null && body.has("text") ? body.get("text").getAsString() : "";
-            reply = body != null && body.has("reply") && !body.get("reply").isJsonNull()
-                    ? body.get("reply").getAsString()
-                    : "";
+            reply = optionalString(body, "reply");
+            format = optionalString(body, "format");
+            replyFormat = optionalString(body, "reply_format");
         } catch (JsonParseException | IllegalStateException exception) {
             sendJson(exchange, 400, Strings.ERROR_INVALID_JSON.get());
             return;
@@ -209,9 +206,11 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
         final String from = sender;
         final String message = text;
         final String quoted = reply;
+        final String messageFormat = format;
+        final String quoteFormat = replyFormat;
         try {
             callOnServerThread(() -> {
-                chatSync.broadcast(from, message, quoted);
+                chatSync.broadcast(from, message, quoted, messageFormat, quoteFormat);
                 return true;
             });
         } catch (Exception exception) {
@@ -220,6 +219,13 @@ public final class VanillaPlusPlusPlugin extends JavaPlugin {
             return;
         }
         sendJson(exchange, 200, Strings.STATUS_OK.get());
+    }
+
+    private static String optionalString(JsonObject body, String key) {
+        if (body == null || !body.has(key) || body.get(key).isJsonNull()) {
+            return "";
+        }
+        return body.get(key).getAsString();
     }
 
     private void handleChatTps(HttpExchange exchange) throws IOException {

@@ -48,12 +48,35 @@ class ChatBridgeFormatTest(unittest.TestCase):
         )
 
     def test_startup_skips_events_already_queued(self) -> None:
-        cursor, primed, fresh = take_new_events([{"id": 1}, {"id": 4}], 0, False)
+        old = [{"id": 1, "at": 100}, {"id": 4, "at": 200}]
+        cursor, primed, fresh = take_new_events(old, 0, False, 1000)
         self.assertEqual(cursor, 4)
         self.assertTrue(primed)
         self.assertEqual(fresh, [])
-        cursor, primed, fresh = take_new_events([{"id": 5, "type": "chat"}], cursor, primed)
+        cursor, primed, fresh = take_new_events([{"id": 5, "type": "chat"}], cursor, primed, 1000)
         self.assertEqual(fresh, [{"id": 5, "type": "chat"}])
+
+    def test_start_after_bot_is_not_skipped(self) -> None:
+        start = {"id": 1, "type": "server_start", "at": 2000}
+        _, _, fresh = take_new_events([start], 0, False, 1000)
+        self.assertEqual(fresh, [start])
+
+    def test_reply_can_be_disabled(self) -> None:
+        self.assertTrue(settings().minecraft_reply_enabled)
+        self.assertFalse(settings(MINECRAFT_FORMAT={"REPLY": ""}).minecraft_reply_enabled)
+        self.assertFalse(settings(MINECRAFT_FORMAT={"REPLY": False}).minecraft_reply_enabled)
+        self.assertTrue(settings(MINECRAFT_FORMAT={"REPLY": "<gray><reply></gray>"}).minecraft_reply_enabled)
+
+    def test_bot_replies_only_in_the_same_chat(self) -> None:
+        from aiogram.methods import EditMessageText, SendMessage
+
+        from reply_context import _should_reply
+
+        self.assertTrue(_should_reply(SendMessage(chat_id=-100, text="x"), -100))
+        self.assertFalse(_should_reply(SendMessage(chat_id=-200, text="x"), -100))
+        self.assertFalse(_should_reply(EditMessageText(chat_id=-100, message_id=1, text="x"), -100))
+
+
     def test_prefix_is_required_and_can_be_kept(self) -> None:
         self.assertIsNone(apply_prefix("hello", "!", False))
         self.assertEqual(apply_prefix("! hello", "!", False), "hello")
